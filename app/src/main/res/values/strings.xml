@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">zero-bezel</string>
+    <string name="touch_injection_service_description">Allows ScreenExtender to replay touches from a connected client device.</string>
 </resources>

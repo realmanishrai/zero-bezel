@@ -1,16 +1,14 @@
 package com.realmanishrai.zero_bezel.host
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -20,11 +18,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.realmanishrai.zero_bezel.network.HANDSHAKE_PORT
+import com.realmanishrai.zero_bezel.network.VIDEO_PORT
 
 @Composable
 fun HostScreen(
@@ -32,69 +32,95 @@ fun HostScreen(
     viewModel: HostViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val backgroundColor by viewModel.backgroundColor.collectAsState()
+    val virtualCursor by viewModel.virtualCursorPosition.collectAsState()
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+                .background(backgroundColor)
         ) {
-            Column {
-                Text(
-                    text = "Host Mode",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "TCP server listening on port $HANDSHAKE_PORT",
-                    modifier = Modifier.padding(top = 8.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(color = backgroundColor)
 
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Host IP Address",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = uiState.ipAddress,
-                        modifier = Modifier.padding(top = 12.dp),
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Text(
-                        text = uiState.status,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        textAlign = TextAlign.Center
+                if (virtualCursor.first >= uiState.virtualWidth / 2f && virtualCursor.second >= 0f) {
+                    val localPreviewX = ((virtualCursor.first - uiState.virtualWidth / 2f) /
+                        (uiState.virtualWidth / 2f)) * size.width
+                    val localPreviewY = (virtualCursor.second / uiState.virtualHeight) * size.height
+
+                    drawCircle(
+                        color = Color.Yellow,
+                        radius = 34f,
+                        center = Offset(
+                            x = localPreviewX,
+                            y = localPreviewY
+                        )
                     )
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                OutlinedButton(onClick = onBack) {
-                    Text("Back")
+                Text(
+                    text = "HOST",
+                    style = MaterialTheme.typography.displayLarge,
+                    fontWeight = FontWeight.Black,
+                    color = Color.White
+                )
+                Text(
+                    text = "LEFT SIDE",
+                    style = MaterialTheme.typography.displayMedium,
+                    fontWeight = FontWeight.Black,
+                    color = Color(0xFFFFD666)
+                )
+                Text(
+                    text = "Virtual canvas: ${uiState.virtualWidth} x ${uiState.virtualHeight}",
+                    modifier = Modifier.padding(top = 16.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White.copy(alpha = 0.86f)
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.42f))
+                    .padding(24.dp)
+            ) {
+                Text(
+                    text = "Host: ${uiState.ipAddress}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Text(
+                    text = "Control $HANDSHAKE_PORT, video $VIDEO_PORT - ${uiState.status}",
+                    modifier = Modifier.padding(top = 6.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White.copy(alpha = 0.82f)
+                )
+                if (virtualCursor.first >= 0f) {
+                    Text(
+                        text = "Virtual cursor: ${virtualCursor.first.toInt()}, ${virtualCursor.second.toInt()}",
+                        modifier = Modifier.padding(top = 6.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFFFFD666)
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    OutlinedButton(onClick = onBack) {
+                        Text("Back")
+                    }
                 }
             }
         }

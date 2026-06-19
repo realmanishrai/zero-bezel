@@ -1,16 +1,15 @@
 package com.realmanishrai.zero_bezel.client
 
-import android.graphics.Bitmap
-import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -21,26 +20,21 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.changedToUp
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.realmanishrai.zero_bezel.network.HANDSHAKE_PORT
-import com.realmanishrai.zero_bezel.network.VIDEO_PORT
-import kotlin.math.hypot
+import com.realmanishrai.zero_bezel.network.MEDIA_HTTP_PORT
+import com.realmanishrai.zero_bezel.viewer.PdfViewer
+import com.realmanishrai.zero_bezel.viewer.VideoViewer
+import com.realmanishrai.zero_bezel.viewer.ViewerScaffold
+import com.realmanishrai.zero_bezel.viewer.ViewerState
+import com.realmanishrai.zero_bezel.viewer.ZoomableSplitImageViewer
 
 @Composable
 fun ClientScreen(
@@ -48,30 +42,58 @@ fun ClientScreen(
     viewModel: ClientViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val latestFrame by viewModel.latestFrame.collectAsState()
-    val context = LocalContext.current
 
-    LaunchedEffect(viewModel) {
-        viewModel.resetEvents.collect {
-            Toast.makeText(context, "Host Reset Screen!", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    if (uiState.isConnected) {
-        TouchpadScreen(
-            latestFrame = latestFrame,
-            onTouchpadSizeChanged = viewModel::onTouchpadSizeChanged,
-            onTap = viewModel::sendTap,
-            onSwipe = viewModel::sendSwipe,
-            onMove = viewModel::sendMove
-        )
-    } else {
+    if (!uiState.isConnected) {
         ClientConnectScreen(
             uiState = uiState,
             onBack = onBack,
             onHostIpChanged = viewModel::onHostIpChanged,
             onConnectClick = viewModel::connectToHost
         )
+        return
+    }
+
+    when (val viewerState = uiState.viewerState) {
+        ViewerState.FileList -> ClientFileListScreen(
+            uiState = uiState,
+            onBack = onBack,
+            onRefresh = viewModel::refreshFiles,
+            onFileClick = viewModel::selectFile
+        )
+
+        is ViewerState.ViewingImage -> ViewerScaffold(
+            title = viewerState.title,
+            onBack = viewModel::showFileList
+        ) { modifier ->
+            ZoomableSplitImageViewer(
+                url = viewerState.url,
+                showRightHalf = true,
+                zoomPanState = uiState.zoomPanState,
+                onZoomPanChanged = { viewModel.sendZoomPan(it.scale, it.offsetX, it.offsetY) },
+                modifier = modifier
+            )
+        }
+
+        is ViewerState.ViewingPdf -> ViewerScaffold(
+            title = viewerState.title,
+            onBack = viewModel::showFileList
+        ) { modifier ->
+            PdfViewer(url = viewerState.url, modifier = modifier)
+        }
+
+        is ViewerState.ViewingVideo -> ViewerScaffold(
+            title = viewerState.title,
+            onBack = viewModel::showFileList
+        ) { modifier ->
+            VideoViewer(
+                url = viewerState.url,
+                showRightHalf = true,
+                isMaster = false,
+                syncState = uiState.videoSyncState,
+                onSyncUpdate = { _, _ -> },
+                modifier = modifier
+            )
+        }
     }
 }
 
@@ -97,7 +119,7 @@ private fun ClientConnectScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Control $HANDSHAKE_PORT, video $VIDEO_PORT",
+                    text = "Control $HANDSHAKE_PORT, media HTTP $MEDIA_HTTP_PORT",
                     modifier = Modifier.padding(top = 8.dp),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -155,70 +177,98 @@ private fun ClientConnectScreen(
 }
 
 @Composable
-private fun TouchpadScreen(
-    latestFrame: Bitmap?,
-    onTouchpadSizeChanged: (Float, Float) -> Unit,
-    onTap: (Float, Float) -> Unit,
-    onSwipe: (Float, Float, Float, Float) -> Unit,
-    onMove: (Float, Float) -> Unit
+private fun ClientFileListScreen(
+    uiState: ClientUiState,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit,
+    onFileClick: (ClientMediaFile) -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF2B2B2B))
-            .onSizeChanged {
-                onTouchpadSizeChanged(
-                    it.width.toFloat(),
-                    it.height.toFloat()
-                )
+    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(Color(0xFF2D1117))
+                .padding(20.dp)
+        ) {
+            Text(
+                text = "Client Library",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Text(
+                text = "Files stream from http://${uiState.hostIp}:$MEDIA_HTTP_PORT",
+                modifier = Modifier.padding(top = 6.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.76f)
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(onClick = onBack) {
+                    Text("Back")
+                }
+                Button(onClick = onRefresh) {
+                    Text("Refresh")
+                }
             }
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    var startPosition: Offset? = null
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull()
-                        if (change == null) continue
 
-                        if (change.pressed && startPosition == null) {
-                            startPosition = change.position
-                        }
-
-                        if (change.pressed && startPosition != null) {
-                            onMove(change.position.x, change.position.y)
-                        }
-
-                        if (change.changedToUp()) {
-                            val start = startPosition ?: change.position
-                            val end = change.position
-                            val distance = hypot(
-                                (end.x - start.x).toDouble(),
-                                (end.y - start.y).toDouble()
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = 16.dp)
+            ) {
+                items(uiState.files) { file ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onFileClick(file) }
+                            .padding(vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${file.kind.icon()} ${file.name}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = Color.White
                             )
-
-                            if (distance < TAP_DISTANCE_THRESHOLD_PX) {
-                                onTap(end.x, end.y)
-                            } else {
-                                onSwipe(start.x, start.y, end.x, end.y)
-                            }
-
-                            startPosition = null
+                            Text(
+                                text = file.size.formatBytes(),
+                                modifier = Modifier.padding(top = 2.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.66f)
+                            )
                         }
-
-                        change.consume()
+                        Text(
+                            text = file.kind.uppercase(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xFFFFD666)
+                        )
                     }
                 }
             }
-    ) {
-        latestFrame?.let { bitmap ->
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "Host screen stream",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.FillBounds
-            )
         }
     }
 }
 
-private const val TAP_DISTANCE_THRESHOLD_PX = 20.0
+private fun String.icon(): String {
+    return when (this) {
+        "pdf" -> "[PDF]"
+        "image" -> "[IMG]"
+        "video" -> "[VID]"
+        else -> "[FILE]"
+    }
+}
+
+private fun Long.formatBytes(): String {
+    if (this < 1024L) return "$this B"
+    val kb = this / 1024.0
+    if (kb < 1024.0) return "%.1f KB".format(kb)
+    val mb = kb / 1024.0
+    return "%.1f MB".format(mb)
+}

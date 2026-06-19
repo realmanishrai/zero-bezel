@@ -1,59 +1,72 @@
 package com.realmanishrai.zero_bezel.client
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.realmanishrai.zero_bezel.network.HANDSHAKE_PORT
-import com.realmanishrai.zero_bezel.network.VIDEO_PORT
+import com.realmanishrai.zero_bezel.network.MEDIA_HTTP_PORT
+import com.realmanishrai.zero_bezel.viewer.VideoSyncState
+import com.realmanishrai.zero_bezel.viewer.ViewerState
+import com.realmanishrai.zero_bezel.viewer.ZoomPanState
 import java.io.BufferedReader
 import java.io.Closeable
-import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.ConnectException
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.URL
+import java.net.URLEncoder
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+
+data class ClientMediaFile(
+    val name: String,
+    val encodedName: String,
+    val size: Long,
+    val mimeType: String,
+    val kind: String
+)
 
 data class ClientUiState(
     val hostIp: String = "",
     val status: String = "Enter the Host IP address.",
-    val isConnected: Boolean = false
-)
+    val isConnected: Boolean = false,
+    val files: List<ClientMediaFile> = emptyList(),
+    val selectedFile: ClientMediaFile? = null,
+    val scrollOffsetY: Int = 0,
+    val pageNumber: Int = 1,
+    val playbackTimestamp: Long = 0L,
+    val isPlaying: Boolean = false,
+    val viewerState: ViewerState = ViewerState.FileList,
+    val zoomPanState: ZoomPanState = ZoomPanState(),
+    val videoSyncState: VideoSyncState = VideoSyncState()
+) {
+    val selectedFileUrl: String?
+        get() = selectedFile?.let { "http://$hostIp:$MEDIA_HTTP_PORT/file/${it.encodedName}" }
+}
 
 class ClientViewModel : ViewModel() {
+    private val clientId = UUID.randomUUID().toString()
+
     private val _uiState = MutableStateFlow(ClientUiState())
     val uiState: StateFlow<ClientUiState> = _uiState.asStateFlow()
 
-    private val _resetEvents = MutableSharedFlow<Unit>()
-    val resetEvents: SharedFlow<Unit> = _resetEvents
-
-    private val _latestFrame = MutableStateFlow<Bitmap?>(null)
-    val latestFrame: StateFlow<Bitmap?> = _latestFrame.asStateFlow()
-
     private var connectJob: Job? = null
     private var controlListenJob: Job? = null
-    private var videoListenJob: Job? = null
-    private var controlSocket: Socket? = null
-    private var videoSocket: Socket? = null
+    private var socket: Socket? = null
     private var reader: BufferedReader? = null
     private var writer: PrintWriter? = null
-    private var videoInput: DataInputStream? = null
-    private var touchpadWidth: Float = 0f
-    private var touchpadHeight: Float = 0f
 
     fun onHostIpChanged(hostIp: String) {
         _uiState.value = _uiState.value.copy(hostIp = hostIp.trim())
@@ -72,31 +85,26 @@ class ClientViewModel : ViewModel() {
 
         connectJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                val newControlSocket = Socket()
-                newControlSocket.tcpNoDelay = true
-                newControlSocket.connect(
-                    InetSocketAddress(hostIp, HANDSHAKE_PORT),
-                    CONNECT_TIMEOUT_MS
-                )
+                val newSocket = Socket()
+                newSocket.tcpNoDelay = true
+                newSocket.connect(InetSocketAddress(hostIp, HANDSHAKE_PORT), CONNECT_TIMEOUT_MS)
+                socket = newSocket
+                reader = BufferedReader(InputStreamReader(newSocket.getInputStream()))
+                writer = PrintWriter(newSocket.getOutputStream(), true)
 
-                val newVideoSocket = Socket()
-                newVideoSocket.tcpNoDelay = true
-                newVideoSocket.connect(
-                    InetSocketAddress(hostIp, VIDEO_PORT),
-                    CONNECT_TIMEOUT_MS
+                sendJson(
+                    JSONObject()
+                        .put(KEY_TYPE, TYPE_HELLO)
+                        .put(KEY_ID, clientId)
+                        .toString()
                 )
+                fetchFileList(hostIp)
 
-                controlSocket = newControlSocket
-                videoSocket = newVideoSocket
-                reader = BufferedReader(InputStreamReader(newControlSocket.getInputStream()))
-                writer = PrintWriter(newControlSocket.getOutputStream(), true)
-                videoInput = DataInputStream(newVideoSocket.getInputStream())
                 _uiState.value = _uiState.value.copy(
                     status = "Connected to Host!",
                     isConnected = true
                 )
                 startControlListener()
-                startVideoListener()
             } catch (_: ConnectException) {
                 _uiState.value = _uiState.value.copy(
                     status = "Connection Refused",
@@ -116,154 +124,205 @@ class ClientViewModel : ViewModel() {
         }
     }
 
-    fun sendColorChange(hexColor: String) {
+    fun refreshFiles() {
+        val hostIp = _uiState.value.hostIp
+        if (hostIp.isBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
-            val colorMessage = JSONObject()
-                .put(KEY_TYPE, TYPE_COLOR_CHANGE)
-                .put(KEY_DATA, hexColor)
-                .toString()
-
-            writer?.println(colorMessage)
-                ?: run { _uiState.value = _uiState.value.copy(status = "Not connected.") }
+            fetchFileList(hostIp)
         }
     }
 
-    fun onTouchpadSizeChanged(width: Float, height: Float) {
-        touchpadWidth = width
-        touchpadHeight = height
-    }
-
-    fun sendTap(x: Float, y: Float) {
-        val normX = normalizeX(x)
-        val normY = normalizeY(y)
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val tapMessage = JSONObject()
-                .put(KEY_TYPE, TYPE_TAP)
-                .put(KEY_X, normX.coerceIn(0f, 1f))
-                .put(KEY_Y, normY.coerceIn(0f, 1f))
+    fun selectFile(file: ClientMediaFile) {
+        val url = file.toUrl()
+        _uiState.value = _uiState.value.copy(
+            selectedFile = file,
+            viewerState = file.toViewerState(url),
+            zoomPanState = ZoomPanState()
+        )
+        sendJson(
+            JSONObject()
+                .put(KEY_TYPE, TYPE_OPEN_FILE)
+                .put(KEY_URL, url)
+                .put(KEY_FILENAME, file.name)
+                .put(KEY_MEDIA_TYPE, file.kind)
                 .toString()
-
-            writer?.println(tapMessage)
-                ?: run { _uiState.value = _uiState.value.copy(status = "Not connected.") }
-        }
+        )
     }
 
-    fun sendSwipe(startX: Float, startY: Float, endX: Float, endY: Float) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val swipeMessage = JSONObject()
-                .put(KEY_TYPE, TYPE_SWIPE)
-                .put(KEY_START_X, normalizeX(startX).coerceIn(0f, 1f))
-                .put(KEY_START_Y, normalizeY(startY).coerceIn(0f, 1f))
-                .put(KEY_END_X, normalizeX(endX).coerceIn(0f, 1f))
-                .put(KEY_END_Y, normalizeY(endY).coerceIn(0f, 1f))
+    fun showFileList() {
+        _uiState.value = _uiState.value.copy(viewerState = ViewerState.FileList)
+    }
+
+    fun sendZoomPan(scale: Float, offsetX: Float, offsetY: Float) {
+        val zoomPan = ZoomPanState(
+            scale = scale.coerceIn(1f, 5f),
+            offsetX = offsetX,
+            offsetY = offsetY
+        )
+        _uiState.value = _uiState.value.copy(zoomPanState = zoomPan)
+        sendJson(
+            JSONObject()
+                .put(KEY_TYPE, TYPE_ZOOM_PAN)
+                .put(KEY_SCALE, zoomPan.scale)
+                .put(KEY_OFFSET_X, zoomPan.offsetX)
+                .put(KEY_OFFSET_Y, zoomPan.offsetY)
                 .toString()
-
-            writer?.println(swipeMessage)
-                ?: run { _uiState.value = _uiState.value.copy(status = "Not connected.") }
-        }
+        )
     }
 
-    fun sendMove(x: Float, y: Float) {
-        val normX = normalizeX(x)
-        val normY = normalizeY(y)
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val moveMessage = JSONObject()
-                .put(KEY_TYPE, TYPE_MOVE)
-                .put(KEY_X, normX.coerceIn(0f, 1f))
-                .put(KEY_Y, normY.coerceIn(0f, 1f))
-                .toString()
-
-            writer?.println(moveMessage)
-                ?: run { _uiState.value = _uiState.value.copy(status = "Not connected.") }
-        }
+    fun sendPlay(timestamp: Long) {
+        sendJson(JSONObject().put(KEY_TYPE, TYPE_PLAY).put(KEY_TIMESTAMP, timestamp).toString())
     }
 
-    private fun normalizeX(x: Float): Float {
-        return if (touchpadWidth > 0f) x / touchpadWidth else 0f
+    fun sendPause(timestamp: Long) {
+        sendJson(JSONObject().put(KEY_TYPE, TYPE_PAUSE).put(KEY_TIMESTAMP, timestamp).toString())
     }
 
-    private fun normalizeY(y: Float): Float {
-        return if (touchpadHeight > 0f) y / touchpadHeight else 0f
+    fun sendSeek(timestamp: Long) {
+        sendJson(JSONObject().put(KEY_TYPE, TYPE_SEEK).put(KEY_TIMESTAMP, timestamp).toString())
+    }
+
+    fun sendScroll(offsetY: Int) {
+        sendJson(JSONObject().put(KEY_TYPE, TYPE_SCROLL).put(KEY_OFFSET_Y, offsetY).toString())
+    }
+
+    fun sendPage(number: Int) {
+        sendJson(JSONObject().put(KEY_TYPE, TYPE_PAGE).put(KEY_NUMBER, number).toString())
     }
 
     private fun startControlListener() {
         controlListenJob?.cancel()
         controlListenJob = viewModelScope.launch(Dispatchers.IO) {
-            listenForHostMessages()
-        }
-    }
-
-    private fun startVideoListener() {
-        videoListenJob?.cancel()
-        videoListenJob = viewModelScope.launch(Dispatchers.IO) {
-            listenForVideoFrames()
-        }
-    }
-
-    private suspend fun listenForHostMessages() {
-        val activeReader = reader ?: return
-
-        try {
-            while (controlListenJob?.isActive == true && controlSocket?.isClosed == false) {
-                val incomingLine = activeReader.readLine() ?: break
-                handleIncomingJson(incomingLine)
-            }
-        } catch (_: IOException) {
-            _uiState.value = _uiState.value.copy(status = "Disconnected", isConnected = false)
-        } finally {
-            closeConnection()
-            if (controlListenJob?.isActive == true) {
+            val activeReader = reader ?: return@launch
+            try {
+                while (controlListenJob?.isActive == true && socket?.isClosed == false) {
+                    val line = activeReader.readLine() ?: break
+                    handleHostMessage(line)
+                }
+            } catch (_: IOException) {
                 _uiState.value = _uiState.value.copy(status = "Disconnected", isConnected = false)
+            } finally {
+                closeConnection()
             }
         }
     }
 
-    private suspend fun listenForVideoFrames() {
-        val activeVideoInput = videoInput ?: return
-
-        try {
-            while (videoListenJob?.isActive == true && videoSocket?.isClosed == false) {
-                val frameSize = activeVideoInput.readInt()
-                if (frameSize <= 0 || frameSize > MAX_FRAME_BYTES) {
-                    throw IOException("Invalid frame size: $frameSize")
-                }
-
-                val frameBytes = ByteArray(frameSize)
-                activeVideoInput.readFully(frameBytes)
-
-                decodeFrame(frameBytes)?.let { bitmap ->
-                    val oldBitmap = _latestFrame.value
-                    oldBitmap?.recycle()
-                    _latestFrame.value = bitmap
-                }
-            }
-        } catch (_: IOException) {
-            _uiState.value = _uiState.value.copy(status = "Video disconnected", isConnected = false)
-        } finally {
-            closeConnection()
-        }
-    }
-
-    private suspend fun handleIncomingJson(rawMessage: String) {
+    private fun handleHostMessage(rawMessage: String) {
         try {
             val message = JSONObject(rawMessage)
-            val type = message.optString(KEY_TYPE)
+            when (message.optString(KEY_TYPE)) {
+                TYPE_OPEN_FILE,
+                TYPE_LOAD -> {
+                    val name = message.optString(KEY_NAME, message.optString(KEY_FILENAME))
+                    val url = message.optString(KEY_URL)
+                    val mediaType = message.optString(KEY_MEDIA_TYPE, message.optString(KEY_KIND, "image"))
+                    val file = _uiState.value.files.firstOrNull { it.name == name }
+                        ?: ClientMediaFile(
+                            name = name,
+                            encodedName = encode(name),
+                            size = 0L,
+                            mimeType = "$mediaType/*",
+                            kind = mediaType
+                        )
+                    _uiState.value = _uiState.value.copy(
+                        selectedFile = file,
+                        viewerState = file.toViewerState(url.ifBlank { file.toUrl() }),
+                        zoomPanState = ZoomPanState()
+                    )
+                }
 
-            if (type == TYPE_RESET) {
-                _resetEvents.emit(Unit)
+                TYPE_NAV_BACK -> showFileList()
+
+                TYPE_ZOOM_PAN,
+                TYPE_ZOOM -> _uiState.value = _uiState.value.copy(
+                    zoomPanState = ZoomPanState(
+                        scale = message.optDouble(KEY_SCALE, 1.0).toFloat().coerceIn(1f, 5f),
+                        offsetX = message.optDouble(KEY_OFFSET_X, 0.0).toFloat(),
+                        offsetY = message.optDouble(KEY_OFFSET_Y, 0.0).toFloat()
+                    )
+                )
+
+                TYPE_VIDEO_SYNC -> _uiState.value = _uiState.value.copy(
+                    videoSyncState = VideoSyncState(
+                        positionMs = message.optLong(KEY_POSITION),
+                        isPlaying = message.optBoolean(KEY_IS_PLAYING)
+                    )
+                )
+
+                TYPE_PLAY -> _uiState.value = _uiState.value.copy(
+                    isPlaying = true,
+                    playbackTimestamp = message.optLong(KEY_TIMESTAMP)
+                )
+
+                TYPE_PAUSE -> _uiState.value = _uiState.value.copy(
+                    isPlaying = false,
+                    playbackTimestamp = message.optLong(KEY_TIMESTAMP)
+                )
+
+                TYPE_SEEK -> _uiState.value = _uiState.value.copy(
+                    playbackTimestamp = message.optLong(KEY_TIMESTAMP)
+                )
+
+                TYPE_SCROLL -> _uiState.value = _uiState.value.copy(
+                    scrollOffsetY = message.optInt(KEY_OFFSET_Y)
+                )
+
+                TYPE_PAGE -> _uiState.value = _uiState.value.copy(
+                    pageNumber = message.optInt(KEY_NUMBER, 1)
+                )
             }
         } catch (_: JSONException) {
-            _uiState.value = _uiState.value.copy(status = "Ignored malformed message.")
+            _uiState.value = _uiState.value.copy(status = "Ignored malformed sync command.")
         }
     }
 
-    private suspend fun decodeFrame(frameBytes: ByteArray): Bitmap? = withContext(Dispatchers.Default) {
+    private fun fetchFileList(hostIp: String) {
+        val url = URL("http://$hostIp:$MEDIA_HTTP_PORT/list")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = CONNECT_TIMEOUT_MS
+        }
         try {
-            BitmapFactory.decodeByteArray(frameBytes, 0, frameBytes.size)
-        } catch (_: IllegalArgumentException) {
-            null
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val files = JSONArray(body).let { array ->
+                List(array.length()) { index ->
+                    val item = array.getJSONObject(index)
+                    ClientMediaFile(
+                        name = item.getString(KEY_NAME),
+                        encodedName = item.getString(KEY_ENCODED_NAME),
+                        size = item.optLong(KEY_SIZE),
+                        mimeType = item.optString(KEY_MIME_TYPE),
+                        kind = item.optString(KEY_TYPE, item.optString(KEY_KIND))
+                    )
+                }
+            }
+            _uiState.value = _uiState.value.copy(files = files)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun sendJson(message: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            writer?.println(message)
+                ?: run { _uiState.value = _uiState.value.copy(status = "Not connected.") }
+        }
+    }
+
+    private fun encode(value: String): String {
+        return URLEncoder.encode(value, Charsets.UTF_8.name())
+    }
+
+    private fun ClientMediaFile.toUrl(): String {
+        return "http://${_uiState.value.hostIp}:$MEDIA_HTTP_PORT/file/$encodedName"
+    }
+
+    private fun ClientMediaFile.toViewerState(url: String): ViewerState {
+        return when (kind) {
+            "image" -> ViewerState.ViewingImage(url, name)
+            "pdf" -> ViewerState.ViewingPdf(url, name)
+            "video" -> ViewerState.ViewingVideo(url, name)
+            else -> ViewerState.FileList
         }
     }
 
@@ -271,25 +330,17 @@ class ClientViewModel : ViewModel() {
         super.onCleared()
         connectJob?.cancel()
         controlListenJob?.cancel()
-        videoListenJob?.cancel()
         closeConnection()
-        _latestFrame.value?.recycle()
-        _latestFrame.value = null
     }
 
     private fun closeConnection() {
         controlListenJob?.cancel()
-        videoListenJob?.cancel()
         reader.closeQuietly()
-        writer.closeQuietly()
-        videoInput.closeQuietly()
-        controlSocket.closeQuietly()
-        videoSocket.closeQuietly()
+        writer?.close()
+        socket.closeQuietly()
         reader = null
         writer = null
-        videoInput = null
-        controlSocket = null
-        videoSocket = null
+        socket = null
     }
 
     private fun Closeable?.closeQuietly() {
@@ -302,18 +353,33 @@ class ClientViewModel : ViewModel() {
     private companion object {
         const val CONNECT_TIMEOUT_MS = 5_000
         const val KEY_TYPE = "type"
-        const val KEY_DATA = "data"
-        const val KEY_X = "x"
-        const val KEY_Y = "y"
-        const val KEY_START_X = "startX"
-        const val KEY_START_Y = "startY"
-        const val KEY_END_X = "endX"
-        const val KEY_END_Y = "endY"
-        const val TYPE_COLOR_CHANGE = "COLOR_CHANGE"
-        const val TYPE_RESET = "RESET"
-        const val TYPE_TAP = "TAP"
-        const val TYPE_SWIPE = "SWIPE"
-        const val TYPE_MOVE = "MOVE"
-        const val MAX_FRAME_BYTES = 8 * 1024 * 1024
+        const val KEY_ID = "id"
+        const val KEY_NAME = "name"
+        const val KEY_URL = "url"
+        const val KEY_FILENAME = "filename"
+        const val KEY_MEDIA_TYPE = "mediaType"
+        const val KEY_ENCODED_NAME = "encodedName"
+        const val KEY_SIZE = "size"
+        const val KEY_MIME_TYPE = "mimeType"
+        const val KEY_KIND = "kind"
+        const val KEY_TIMESTAMP = "timestamp"
+        const val KEY_POSITION = "position"
+        const val KEY_IS_PLAYING = "isPlaying"
+        const val KEY_OFFSET_Y = "offsetY"
+        const val KEY_NUMBER = "number"
+        const val KEY_SCALE = "scale"
+        const val KEY_OFFSET_X = "offsetX"
+        const val TYPE_HELLO = "HELLO"
+        const val TYPE_LOAD = "LOAD"
+        const val TYPE_OPEN_FILE = "OPEN_FILE"
+        const val TYPE_NAV_BACK = "NAV_BACK"
+        const val TYPE_ZOOM = "ZOOM"
+        const val TYPE_ZOOM_PAN = "ZOOM_PAN"
+        const val TYPE_PLAY = "PLAY"
+        const val TYPE_PAUSE = "PAUSE"
+        const val TYPE_SEEK = "SEEK"
+        const val TYPE_SCROLL = "SCROLL"
+        const val TYPE_PAGE = "PAGE"
+        const val TYPE_VIDEO_SYNC = "VIDEO_SYNC"
     }
 }

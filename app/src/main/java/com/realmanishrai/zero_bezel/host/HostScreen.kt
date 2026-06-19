@@ -1,14 +1,19 @@
 package com.realmanishrai.zero_bezel.host
 
-import androidx.compose.foundation.Canvas
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -16,15 +21,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.realmanishrai.zero_bezel.network.HANDSHAKE_PORT
-import com.realmanishrai.zero_bezel.network.VIDEO_PORT
+import com.realmanishrai.zero_bezel.network.MEDIA_HTTP_PORT
+import com.realmanishrai.zero_bezel.viewer.PdfViewer
+import com.realmanishrai.zero_bezel.viewer.VideoViewer
+import com.realmanishrai.zero_bezel.viewer.ViewerScaffold
+import com.realmanishrai.zero_bezel.viewer.ViewerState
+import com.realmanishrai.zero_bezel.viewer.ZoomPanState
+import com.realmanishrai.zero_bezel.viewer.ZoomableSplitImageViewer
 
 @Composable
 fun HostScreen(
@@ -32,94 +42,135 @@ fun HostScreen(
     viewModel: HostViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val backgroundColor by viewModel.backgroundColor.collectAsState()
-    val virtualCursor by viewModel.virtualCursorPosition.collectAsState()
+    val context = LocalContext.current
+    val folderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            viewModel.onFolderSelected(uri)
+        }
+    }
 
+    when (val viewerState = uiState.viewerState) {
+        ViewerState.FileList -> HostFileListScreen(
+            uiState = uiState,
+            onBack = onBack,
+            onPickFolder = { folderPicker.launch(null) },
+            onFileClick = viewModel::selectFile
+        )
+
+        is ViewerState.ViewingImage -> ViewerScaffold(
+            title = viewerState.title,
+            onBack = viewModel::showFileList
+        ) { modifier ->
+            ZoomableSplitImageViewer(
+                url = viewerState.url,
+                showRightHalf = false,
+                zoomPanState = uiState.zoomPanState,
+                onZoomPanChanged = { viewModel.updateZoomPan(it.scale, it.offsetX, it.offsetY) },
+                modifier = modifier
+            )
+        }
+
+        is ViewerState.ViewingPdf -> ViewerScaffold(
+            title = viewerState.title,
+            onBack = viewModel::showFileList
+        ) { modifier ->
+            PdfViewer(url = viewerState.url, modifier = modifier)
+        }
+
+        is ViewerState.ViewingVideo -> ViewerScaffold(
+            title = viewerState.title,
+            onBack = viewModel::showFileList
+        ) { modifier ->
+            VideoViewer(
+                url = viewerState.url,
+                showRightHalf = false,
+                isMaster = true,
+                syncState = uiState.videoSyncState,
+                onSyncUpdate = viewModel::updateVideoSync,
+                modifier = modifier
+            )
+        }
+    }
+}
+
+@Composable
+private fun HostFileListScreen(
+    uiState: HostUiState,
+    onBack: () -> Unit,
+    onPickFolder: () -> Unit,
+    onFileClick: (HostMediaFile) -> Unit
+) {
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(backgroundColor)
+                .background(Color(0xFF071B33))
+                .padding(20.dp)
         ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawRect(color = backgroundColor)
+            Text(
+                text = "Host Library",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Text(
+                text = "Host ${uiState.ipAddress} | HTTP $MEDIA_HTTP_PORT | Control $HANDSHAKE_PORT",
+                modifier = Modifier.padding(top = 6.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.76f)
+            )
+            Text(
+                text = "Clients: ${uiState.connectedClients}",
+                modifier = Modifier.padding(top = 4.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFFFD666)
+            )
 
-                if (virtualCursor.first >= uiState.virtualWidth / 2f && virtualCursor.second >= 0f) {
-                    val localPreviewX = ((virtualCursor.first - uiState.virtualWidth / 2f) /
-                        (uiState.virtualWidth / 2f)) * size.width
-                    val localPreviewY = (virtualCursor.second / uiState.virtualHeight) * size.height
-
-                    drawCircle(
-                        color = Color.Yellow,
-                        radius = 34f,
-                        center = Offset(
-                            x = localPreviewX,
-                            y = localPreviewY
-                        )
-                    )
-                }
-            }
-
-            Column(
-                modifier = Modifier.align(Alignment.Center),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "HOST",
-                    style = MaterialTheme.typography.displayLarge,
-                    fontWeight = FontWeight.Black,
-                    color = Color.White
-                )
-                Text(
-                    text = "LEFT SIDE",
-                    style = MaterialTheme.typography.displayMedium,
-                    fontWeight = FontWeight.Black,
-                    color = Color(0xFFFFD666)
-                )
-                Text(
-                    text = "Virtual canvas: ${uiState.virtualWidth} x ${uiState.virtualHeight}",
-                    modifier = Modifier.padding(top = 16.dp),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.86f)
-                )
-            }
-
-            Column(
+            Row(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.42f))
-                    .padding(24.dp)
+                    .padding(top = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "Host: ${uiState.ipAddress}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Text(
-                    text = "Control $HANDSHAKE_PORT, video $VIDEO_PORT - ${uiState.status}",
-                    modifier = Modifier.padding(top = 6.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = Color.White.copy(alpha = 0.82f)
-                )
-                if (virtualCursor.first >= 0f) {
-                    Text(
-                        text = "Virtual cursor: ${virtualCursor.first.toInt()}, ${virtualCursor.second.toInt()}",
-                        modifier = Modifier.padding(top = 6.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFFFD666)
-                    )
+                OutlinedButton(onClick = onBack) {
+                    Text("Back")
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    OutlinedButton(onClick = onBack) {
-                        Text("Back")
+                Button(onClick = onPickFolder) {
+                    Text("Select Content Folder")
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = 16.dp)
+            ) {
+                items(uiState.files) { file ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onFileClick(file) }
+                            .padding(vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = file.name,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color.White
+                        )
+                        Text(
+                            text = file.kind.uppercase(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xFFFFD666)
+                        )
                     }
                 }
             }

@@ -1,79 +1,182 @@
 package com.realmanishrai.zero_bezel.host
 
 import android.app.Application
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color as AndroidColor
-import android.graphics.Paint
-import androidx.compose.ui.graphics.Color
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.realmanishrai.zero_bezel.network.HANDSHAKE_PORT
+import com.realmanishrai.zero_bezel.network.MEDIA_HTTP_PORT
+import com.realmanishrai.zero_bezel.network.MediaStreamingServer
 import com.realmanishrai.zero_bezel.network.NetworkUtils
-import com.realmanishrai.zero_bezel.network.VIDEO_PORT
+import com.realmanishrai.zero_bezel.network.ServedMediaFile
+import com.realmanishrai.zero_bezel.viewer.VideoSyncState
+import com.realmanishrai.zero_bezel.viewer.ViewerState
+import com.realmanishrai.zero_bezel.viewer.ZoomPanState
 import java.io.BufferedReader
-import java.io.ByteArrayOutputStream
 import java.io.Closeable
-import java.io.DataOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URLEncoder
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONException
 import org.json.JSONObject
 
-data class HostUiState(
-    val ipAddress: String = "Finding IP address...",
-    val status: String = "Starting server...",
-    val virtualWidth: Int = 0,
-    val virtualHeight: Int = 0
+data class HostMediaFile(
+    val name: String,
+    val encodedName: String,
+    val kind: String
 )
 
-class HostViewModel(application: Application) : AndroidViewModel(application) {
-    private val displayMetrics = application.resources.displayMetrics
-    private val screenWidth = displayMetrics.widthPixels
-    private val screenHeight = displayMetrics.heightPixels
+data class HostUiState(
+    val ipAddress: String = "Finding IP address...",
+    val status: String = "Starting servers...",
+    val selectedFolderUri: String? = null,
+    val files: List<HostMediaFile> = emptyList(),
+    val selectedFile: HostMediaFile? = null,
+    val connectedClients: Int = 0,
+    val viewerState: ViewerState = ViewerState.FileList,
+    val zoomPanState: ZoomPanState = ZoomPanState(),
+    val videoSyncState: VideoSyncState = VideoSyncState()
+) {
+    val selectedFileUrl: String?
+        get() = selectedFile?.let { "http://$ipAddress:$MEDIA_HTTP_PORT/file/${it.encodedName}" }
+}
 
-    private val _uiState = MutableStateFlow(
-        HostUiState(
-            virtualWidth = screenWidth * 2,
-            virtualHeight = screenHeight
-        )
-    )
+class HostViewModel(application: Application) : AndroidViewModel(application) {
+    private val preferences = application.getSharedPreferences(PREFS_NAME, 0)
+    private val mediaServer = MediaStreamingServer(application.contentResolver)
+    private val clients = CopyOnWriteArrayList<ClientConnection>()
+
+    private val _uiState = MutableStateFlow(HostUiState())
     val uiState: StateFlow<HostUiState> = _uiState.asStateFlow()
 
-    private val _backgroundColor = MutableStateFlow(Color(0xFF0B2A4A))
-    val backgroundColor: StateFlow<Color> = _backgroundColor.asStateFlow()
-
-    private val _virtualCursorPosition = MutableStateFlow(-1f to -1f)
-    val virtualCursorPosition: StateFlow<Pair<Float, Float>> = _virtualCursorPosition.asStateFlow()
-
     private var controlServerJob: Job? = null
-    private var videoServerJob: Job? = null
-    private var rightHalfStreamJob: Job? = null
     private var controlServerSocket: ServerSocket? = null
-    private var videoServerSocket: ServerSocket? = null
-    private var controlClientSocket: Socket? = null
-    private var videoClientSocket: Socket? = null
-    private var reader: BufferedReader? = null
-    private var writer: PrintWriter? = null
-    private var videoOutput: DataOutputStream? = null
-    private val writerLock = Any()
-    private val videoWriterLock = Any()
+    private var lastZoomSyncMs = 0L
 
     init {
+        restoreFolder()
+        startHttpServer()
         startControlServer()
-        startVideoServer()
+    }
+
+    fun onFolderSelected(uri: Uri) {
+        preferences.edit().putString(KEY_FOLDER_URI, uri.toString()).apply()
+        mediaServer.setFolder(uri)
+        refreshFiles()
+    }
+
+    fun refreshFiles() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val files = mediaServer.listFiles().map { it.toUiFile() }
+            _uiState.value = _uiState.value.copy(
+                selectedFolderUri = preferences.getString(KEY_FOLDER_URI, null),
+                files = files,
+                selectedFile = files.firstOrNull { it.name == _uiState.value.selectedFile?.name }
+            )
+        }
+    }
+
+    fun selectFile(file: HostMediaFile) {
+        val url = file.toUrl()
+        _uiState.value = _uiState.value.copy(
+            selectedFile = file,
+            viewerState = file.toViewerState(url),
+            zoomPanState = ZoomPanState()
+        )
+        broadcast(
+            JSONObject()
+                .put(KEY_TYPE, TYPE_OPEN_FILE)
+                .put(KEY_URL, url)
+                .put(KEY_FILENAME, file.name)
+                .put(KEY_MEDIA_TYPE, file.kind)
+                .toString()
+        )
+    }
+
+    fun showFileList() {
+        _uiState.value = _uiState.value.copy(viewerState = ViewerState.FileList)
+        broadcast(JSONObject().put(KEY_TYPE, TYPE_NAV_BACK).toString())
+    }
+
+    fun updateZoomPan(scale: Float, offsetX: Float, offsetY: Float) {
+        val zoomPan = ZoomPanState(
+            scale = scale.coerceIn(1f, 5f),
+            offsetX = offsetX,
+            offsetY = offsetY
+        )
+        _uiState.value = _uiState.value.copy(zoomPanState = zoomPan)
+        val now = System.currentTimeMillis()
+        if (now - lastZoomSyncMs < ZOOM_SYNC_INTERVAL_MS) return
+        lastZoomSyncMs = now
+        broadcast(
+            JSONObject()
+                .put(KEY_TYPE, TYPE_ZOOM_PAN)
+                .put(KEY_SCALE, zoomPan.scale)
+                .put(KEY_OFFSET_X, zoomPan.offsetX)
+                .put(KEY_OFFSET_Y, zoomPan.offsetY)
+                .toString()
+        )
+    }
+
+    fun broadcastPlay(timestamp: Long = 0L) {
+        broadcast(JSONObject().put(KEY_TYPE, TYPE_PLAY).put(KEY_TIMESTAMP, timestamp).toString())
+    }
+
+    fun broadcastPause(timestamp: Long = 0L) {
+        broadcast(JSONObject().put(KEY_TYPE, TYPE_PAUSE).put(KEY_TIMESTAMP, timestamp).toString())
+    }
+
+    fun broadcastSeek(timestamp: Long) {
+        broadcast(JSONObject().put(KEY_TYPE, TYPE_SEEK).put(KEY_TIMESTAMP, timestamp).toString())
+    }
+
+    fun broadcastScroll(offsetY: Int) {
+        broadcast(JSONObject().put(KEY_TYPE, TYPE_SCROLL).put(KEY_OFFSET_Y, offsetY).toString())
+    }
+
+    fun broadcastPage(number: Int) {
+        broadcast(JSONObject().put(KEY_TYPE, TYPE_PAGE).put(KEY_NUMBER, number).toString())
+    }
+
+    fun updateVideoSync(positionMs: Long, isPlaying: Boolean) {
+        _uiState.value = _uiState.value.copy(
+            videoSyncState = VideoSyncState(positionMs = positionMs, isPlaying = isPlaying)
+        )
+        broadcast(
+            JSONObject()
+                .put(KEY_TYPE, TYPE_VIDEO_SYNC)
+                .put(KEY_POSITION, positionMs)
+                .put(KEY_IS_PLAYING, isPlaying)
+                .toString()
+        )
+    }
+
+    private fun restoreFolder() {
+        val savedUri = preferences.getString(KEY_FOLDER_URI, null)?.let(Uri::parse)
+        mediaServer.setFolder(savedUri)
+        _uiState.value = _uiState.value.copy(selectedFolderUri = savedUri?.toString())
+        refreshFiles()
+    }
+
+    private fun startHttpServer() {
+        runCatching {
+            mediaServer.start(NanoStartTimeoutMs, false)
+        }.onFailure { exception ->
+            _uiState.value = _uiState.value.copy(
+                status = exception.message ?: "HTTP server failed"
+            )
+        }
     }
 
     private fun startControlServer() {
@@ -81,7 +184,7 @@ class HostViewModel(application: Application) : AndroidViewModel(application) {
 
         _uiState.value = _uiState.value.copy(
             ipAddress = NetworkUtils.getLocalWifiIpv4Address() ?: "Wi-Fi IPv4 address unavailable",
-            status = "Waiting for control client..."
+            status = "HTTP $MEDIA_HTTP_PORT, control $HANDSHAKE_PORT"
         )
 
         controlServerJob = viewModelScope.launch(Dispatchers.IO) {
@@ -92,241 +195,140 @@ class HostViewModel(application: Application) : AndroidViewModel(application) {
                     while (isActive && !server.isClosed) {
                         val socket = server.accept()
                         socket.tcpNoDelay = true
-                        closeControlConnection()
-                        controlClientSocket = socket
-                        reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-                        writer = PrintWriter(socket.getOutputStream(), true)
-                        _uiState.value = _uiState.value.copy(status = "Control connected. Waiting for video...")
-                        listenForClientMessages()
+                        val connection = ClientConnection(
+                            socket = socket,
+                            reader = BufferedReader(InputStreamReader(socket.getInputStream())),
+                            writer = PrintWriter(socket.getOutputStream(), true)
+                        )
+                        clients += connection
+                        updateClientCount()
+                        launch { listenToClient(connection) }
                     }
                 }
             } catch (exception: IOException) {
                 if (controlServerJob?.isActive == true) {
                     _uiState.value = _uiState.value.copy(
-                        status = exception.message ?: "Control server socket error"
+                        status = exception.message ?: "Control server error"
                     )
                 }
             }
         }
     }
 
-    private fun startVideoServer() {
-        if (videoServerJob?.isActive == true) return
-
-        videoServerJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
-                ServerSocket(VIDEO_PORT).use { server ->
-                    videoServerSocket = server
-
-                    while (isActive && !server.isClosed) {
-                        val socket = server.accept()
-                        socket.tcpNoDelay = true
-                        closeVideoConnection()
-                        videoClientSocket = socket
-                        videoOutput = DataOutputStream(socket.getOutputStream())
-                        _uiState.value = _uiState.value.copy(status = "Client Connected!")
-                        startRightHalfStreaming()
-                    }
-                }
-            } catch (exception: IOException) {
-                if (videoServerJob?.isActive == true) {
-                    _uiState.value = _uiState.value.copy(
-                        status = exception.message ?: "Video server socket error"
-                    )
-                }
-            }
-        }
-    }
-
-    fun sendReset() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val resetMessage = JSONObject()
-                .put(KEY_TYPE, TYPE_RESET)
-                .put(KEY_DATA, "")
-                .toString()
-
-            if (!sendJson(resetMessage)) {
-                _uiState.value = _uiState.value.copy(status = "No client connected.")
-            }
-        }
-    }
-
-    private suspend fun listenForClientMessages() {
-        val activeReader = reader ?: return
-
+    private suspend fun listenToClient(connection: ClientConnection) {
         try {
-            while (controlServerJob?.isActive == true && controlClientSocket?.isClosed == false) {
-                val incomingLine = activeReader.readLine() ?: break
-                handleIncomingJson(incomingLine)
+            while (controlServerJob?.isActive == true && !connection.socket.isClosed) {
+                val line = connection.reader.readLine() ?: break
+                handleClientMessage(connection, line)
             }
         } catch (_: IOException) {
-            _uiState.value = _uiState.value.copy(status = "Disconnected")
         } finally {
-            closeClientConnection()
-            if (controlServerJob?.isActive == true) {
-                _uiState.value = _uiState.value.copy(status = "Disconnected")
-            }
+            clients -= connection
+            connection.closeQuietly()
+            updateClientCount()
         }
     }
 
-    private suspend fun handleIncomingJson(rawMessage: String) {
+    private fun handleClientMessage(connection: ClientConnection, rawMessage: String) {
         try {
             val message = JSONObject(rawMessage)
-            val type = message.optString(KEY_TYPE)
-            val data = message.optString(KEY_DATA)
-
-            when {
-                type == TYPE_COLOR_CHANGE && data.isNotBlank() -> {
-                    _backgroundColor.value = Color(AndroidColor.parseColor(data))
+            when (message.optString(KEY_TYPE)) {
+                TYPE_HELLO -> {
+                    connection.clientId = message.optString(KEY_ID, connection.clientId)
+                    _uiState.value.selectedFile?.let { file ->
+                        connection.send(
+                            JSONObject()
+                                .put(KEY_TYPE, TYPE_OPEN_FILE)
+                                .put(KEY_URL, file.toUrl())
+                                .put(KEY_FILENAME, file.name)
+                                .put(KEY_MEDIA_TYPE, file.kind)
+                                .toString()
+                        )
+                    }
                 }
 
-                type == TYPE_TAP -> {
-                    val normX = message.getDouble(KEY_X).toFloat().coerceIn(0f, 1f)
-                    val normY = message.getDouble(KEY_Y).toFloat().coerceIn(0f, 1f)
-                    updateVirtualCursor(normX, normY)
+                TYPE_OPEN_FILE,
+                TYPE_LOAD -> {
+                    val name = message.optString(KEY_NAME, message.optString(KEY_FILENAME))
+                    val file = _uiState.value.files.firstOrNull { it.name == name } ?: return
+                    _uiState.value = _uiState.value.copy(
+                        selectedFile = file,
+                        viewerState = file.toViewerState(file.toUrl()),
+                        zoomPanState = ZoomPanState()
+                    )
+                    broadcast(message.toString())
                 }
 
-                type == TYPE_SWIPE -> {
-                    val endX = message.getDouble(KEY_END_X).toFloat().coerceIn(0f, 1f)
-                    val endY = message.getDouble(KEY_END_Y).toFloat().coerceIn(0f, 1f)
-                    updateVirtualCursor(endX, endY)
+                TYPE_NAV_BACK -> showFileList()
+
+                TYPE_ZOOM_PAN,
+                TYPE_ZOOM -> {
+                    val zoomPan = ZoomPanState(
+                        scale = message.optDouble(KEY_SCALE, 1.0).toFloat().coerceIn(1f, 5f),
+                        offsetX = message.optDouble(KEY_OFFSET_X, 0.0).toFloat(),
+                        offsetY = message.optDouble(KEY_OFFSET_Y, 0.0).toFloat()
+                    )
+                    _uiState.value = _uiState.value.copy(zoomPanState = zoomPan)
+                    broadcast(message.toString())
                 }
 
-                type == TYPE_MOVE -> {
-                    val normX = message.getDouble(KEY_X).toFloat().coerceIn(0f, 1f)
-                    val normY = message.getDouble(KEY_Y).toFloat().coerceIn(0f, 1f)
-                    updateVirtualCursor(normX, normY)
-                }
+                TYPE_PLAY,
+                TYPE_PAUSE,
+                TYPE_SEEK,
+                TYPE_SCROLL,
+                TYPE_PAGE -> broadcast(message.toString())
             }
         } catch (_: JSONException) {
-            _uiState.value = _uiState.value.copy(status = "Ignored malformed message.")
-        } catch (_: IllegalArgumentException) {
-            _uiState.value = _uiState.value.copy(status = "Ignored invalid message.")
         }
     }
 
-    private suspend fun updateVirtualCursor(normalizedX: Float, normalizedY: Float) {
-        val virtualX = screenWidth + (normalizedX * screenWidth)
-        val virtualY = normalizedY * screenHeight
-
-        withContext(Dispatchers.Main) {
-            _virtualCursorPosition.value = virtualX to virtualY
-        }
-    }
-
-    private fun startRightHalfStreaming() {
-        rightHalfStreamJob?.cancel()
-        rightHalfStreamJob = viewModelScope.launch(Dispatchers.Default) {
-            while (isActive && videoClientSocket?.isClosed == false) {
-                val bitmap = renderRightHalfToBitmap()
-                try {
-                    val outputStream = ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, RIGHT_HALF_JPEG_QUALITY, outputStream)
-                    val frameBytes = outputStream.toByteArray()
-
-                    val sent = withContext(Dispatchers.IO) {
-                        runCatching { sendVideoFrame(frameBytes) }.getOrDefault(false)
-                    }
-                    if (!sent) {
-                        closeVideoConnection()
-                    }
-                } finally {
-                    bitmap.recycle()
-                }
-
-                delay(RIGHT_HALF_FRAME_INTERVAL_MS)
+    private fun broadcast(message: String) {
+        clients.forEach { client ->
+            if (!client.send(message)) {
+                clients -= client
+                client.closeQuietly()
             }
         }
+        updateClientCount()
     }
 
-    fun renderRightHalfToBitmap(): Bitmap {
-        val bitmap = Bitmap.createBitmap(screenWidth, screenHeight, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        canvas.drawColor(AndroidColor.rgb(94, 19, 27))
+    private fun updateClientCount() {
+        _uiState.value = _uiState.value.copy(connectedClients = clients.size)
+    }
 
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.WHITE
-            textAlign = Paint.Align.CENTER
-            textSize = screenWidth * 0.11f
-            isFakeBoldText = true
-        }
-        val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.rgb(255, 214, 102)
-            textAlign = Paint.Align.CENTER
-            textSize = screenWidth * 0.052f
-        }
-        val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(90, 255, 255, 255)
-            strokeWidth = 5f
-        }
-
-        canvas.drawText("CLIENT", screenWidth / 2f, screenHeight * 0.42f, titlePaint)
-        canvas.drawText("RIGHT SIDE", screenWidth / 2f, screenHeight * 0.54f, titlePaint)
-        canvas.drawText("Virtual X: ${screenWidth} - ${screenWidth * 2}", screenWidth / 2f, screenHeight * 0.64f, subtitlePaint)
-        canvas.drawLine(0f, 0f, 0f, screenHeight.toFloat(), linePaint)
-
-        val cursor = _virtualCursorPosition.value
-        if (cursor.first >= screenWidth && cursor.second >= 0f) {
-            val localX = cursor.first - screenWidth
-            val localY = cursor.second
-            val cursorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = AndroidColor.YELLOW
+    private fun ServedMediaFile.toUiFile(): HostMediaFile {
+        return HostMediaFile(
+            name = name,
+            encodedName = URLEncoder.encode(name, Charsets.UTF_8.name()),
+            kind = when {
+                mimeType.startsWith("image/") -> "image"
+                mimeType.startsWith("video/") -> "video"
+                mimeType == "application/pdf" -> "pdf"
+                else -> "other"
             }
-            canvas.drawCircle(localX, localY, 34f, cursorPaint)
-        }
-
-        return bitmap
+        )
     }
 
-    private fun sendJson(message: String): Boolean {
-        val activeWriter = writer ?: return false
-        synchronized(writerLock) {
-            activeWriter.println(message)
-            activeWriter.flush()
-        }
-        return true
+    private fun HostMediaFile.toUrl(): String {
+        return "http://${_uiState.value.ipAddress}:$MEDIA_HTTP_PORT/file/$encodedName"
     }
 
-    private fun sendVideoFrame(bytes: ByteArray): Boolean {
-        val activeVideoOutput = videoOutput ?: return false
-        synchronized(videoWriterLock) {
-            activeVideoOutput.writeInt(bytes.size)
-            activeVideoOutput.write(bytes)
-            activeVideoOutput.flush()
+    private fun HostMediaFile.toViewerState(url: String): ViewerState {
+        return when (kind) {
+            "image" -> ViewerState.ViewingImage(url, name)
+            "pdf" -> ViewerState.ViewingPdf(url, name)
+            "video" -> ViewerState.ViewingVideo(url, name)
+            else -> ViewerState.FileList
         }
-        return true
     }
 
     override fun onCleared() {
         super.onCleared()
         controlServerJob?.cancel()
-        videoServerJob?.cancel()
-        closeClientConnection()
         controlServerSocket.closeQuietly()
-        videoServerSocket.closeQuietly()
-    }
-
-    private fun closeClientConnection() {
-        closeControlConnection()
-        closeVideoConnection()
-    }
-
-    private fun closeControlConnection() {
-        reader.closeQuietly()
-        writer.closeQuietly()
-        controlClientSocket.closeQuietly()
-        reader = null
-        writer = null
-        controlClientSocket = null
-    }
-
-    private fun closeVideoConnection() {
-        rightHalfStreamJob?.cancel()
-        rightHalfStreamJob = null
-        videoOutput.closeQuietly()
-        videoClientSocket.closeQuietly()
-        videoOutput = null
-        videoClientSocket = null
+        clients.forEach { it.closeQuietly() }
+        clients.clear()
+        mediaServer.stop()
     }
 
     private fun Closeable?.closeQuietly() {
@@ -336,21 +338,61 @@ class HostViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private class ClientConnection(
+        val socket: Socket,
+        val reader: BufferedReader,
+        val writer: PrintWriter,
+        var clientId: String = "unknown"
+    ) {
+        fun send(message: String): Boolean {
+            writer.println(message)
+            writer.flush()
+            return !writer.checkError()
+        }
+
+        fun closeQuietly() {
+            try {
+                reader.close()
+            } catch (_: IOException) {
+            }
+            writer.close()
+            try {
+                socket.close()
+            } catch (_: IOException) {
+            }
+        }
+    }
+
     private companion object {
+        const val PREFS_NAME = "screen_extender_host"
+        const val KEY_FOLDER_URI = "folder_uri"
         const val KEY_TYPE = "type"
-        const val KEY_DATA = "data"
-        const val KEY_X = "x"
-        const val KEY_Y = "y"
-        const val KEY_START_X = "startX"
-        const val KEY_START_Y = "startY"
-        const val KEY_END_X = "endX"
-        const val KEY_END_Y = "endY"
-        const val TYPE_COLOR_CHANGE = "COLOR_CHANGE"
-        const val TYPE_RESET = "RESET"
-        const val TYPE_TAP = "TAP"
-        const val TYPE_SWIPE = "SWIPE"
-        const val TYPE_MOVE = "MOVE"
-        const val RIGHT_HALF_JPEG_QUALITY = 70
-        const val RIGHT_HALF_FRAME_INTERVAL_MS = 66L
+        const val KEY_ID = "id"
+        const val KEY_NAME = "name"
+        const val KEY_URL = "url"
+        const val KEY_FILENAME = "filename"
+        const val KEY_MEDIA_TYPE = "mediaType"
+        const val KEY_KIND = "kind"
+        const val KEY_TIMESTAMP = "timestamp"
+        const val KEY_POSITION = "position"
+        const val KEY_IS_PLAYING = "isPlaying"
+        const val KEY_OFFSET_Y = "offsetY"
+        const val KEY_NUMBER = "number"
+        const val KEY_SCALE = "scale"
+        const val KEY_OFFSET_X = "offsetX"
+        const val TYPE_HELLO = "HELLO"
+        const val TYPE_LOAD = "LOAD"
+        const val TYPE_OPEN_FILE = "OPEN_FILE"
+        const val TYPE_NAV_BACK = "NAV_BACK"
+        const val TYPE_ZOOM = "ZOOM"
+        const val TYPE_ZOOM_PAN = "ZOOM_PAN"
+        const val TYPE_PLAY = "PLAY"
+        const val TYPE_PAUSE = "PAUSE"
+        const val TYPE_SEEK = "SEEK"
+        const val TYPE_SCROLL = "SCROLL"
+        const val TYPE_PAGE = "PAGE"
+        const val TYPE_VIDEO_SYNC = "VIDEO_SYNC"
+        const val ZOOM_SYNC_INTERVAL_MS = 30L
+        const val NanoStartTimeoutMs = 5_000
     }
 }

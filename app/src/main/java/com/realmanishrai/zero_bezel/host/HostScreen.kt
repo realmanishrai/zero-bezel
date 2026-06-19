@@ -29,12 +29,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.realmanishrai.zero_bezel.network.HANDSHAKE_PORT
 import com.realmanishrai.zero_bezel.network.MEDIA_HTTP_PORT
-import com.realmanishrai.zero_bezel.viewer.PdfViewer
-import com.realmanishrai.zero_bezel.viewer.VideoViewer
-import com.realmanishrai.zero_bezel.viewer.ViewerScaffold
 import com.realmanishrai.zero_bezel.viewer.ViewerState
-import com.realmanishrai.zero_bezel.viewer.ZoomPanState
-import com.realmanishrai.zero_bezel.viewer.ZoomableSplitImageViewer
+import com.realmanishrai.zero_bezel.viewer.WebViewViewerScreen
 
 @Composable
 fun HostScreen(
@@ -63,39 +59,29 @@ fun HostScreen(
             onFileClick = viewModel::selectFile
         )
 
-        is ViewerState.ViewingImage -> ViewerScaffold(
-            title = viewerState.title,
-            onBack = viewModel::showFileList
-        ) { modifier ->
-            ZoomableSplitImageViewer(
-                url = viewerState.url,
-                showRightHalf = false,
-                zoomPanState = uiState.zoomPanState,
-                onZoomPanChanged = { viewModel.updateZoomPan(it.scale, it.offsetX, it.offsetY) },
-                modifier = modifier
-            )
-        }
+        is ViewerState.ViewingImage -> WebViewViewerScreen(
+            fileUrl = viewerState.url,
+            fileType = "image",
+            isClient = false,
+            viewModel = viewModel,
+            onNavigateBack = viewModel::showFileList
+        )
 
-        is ViewerState.ViewingPdf -> ViewerScaffold(
-            title = viewerState.title,
-            onBack = viewModel::showFileList
-        ) { modifier ->
-            PdfViewer(url = viewerState.url, modifier = modifier)
-        }
+        is ViewerState.ViewingPdf -> WebViewViewerScreen(
+            fileUrl = viewerState.url,
+            fileType = "pdf",
+            isClient = false,
+            viewModel = viewModel,
+            onNavigateBack = viewModel::showFileList
+        )
 
-        is ViewerState.ViewingVideo -> ViewerScaffold(
-            title = viewerState.title,
-            onBack = viewModel::showFileList
-        ) { modifier ->
-            VideoViewer(
-                url = viewerState.url,
-                showRightHalf = false,
-                isMaster = true,
-                syncState = uiState.videoSyncState,
-                onSyncUpdate = viewModel::updateVideoSync,
-                modifier = modifier
-            )
-        }
+        is ViewerState.ViewingVideo -> WebViewViewerScreen(
+            fileUrl = viewerState.url,
+            fileType = "video",
+            isClient = false,
+            viewModel = viewModel,
+            onNavigateBack = viewModel::showFileList
+        )
     }
 }
 

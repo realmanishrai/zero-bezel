@@ -18,8 +18,10 @@ data class ServedMediaFile(
 )
 
 class MediaStreamingServer(
-    private val contentResolver: ContentResolver
+    private val context: android.content.Context
 ) : NanoHTTPD(MEDIA_HTTP_PORT) {
+    private val contentResolver = context.contentResolver
+
     @Volatile
     private var folderUri: Uri? = null
 
@@ -31,19 +33,21 @@ class MediaStreamingServer(
         return try {
             when {
                 session.uri == "/list" -> serveList()
+                session.uri == "/test" -> newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Server is working!")
+                session.uri == "/viewer.html" -> serveViewerHtml(session)
                 session.uri.startsWith("/file/") -> serveFile(session)
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
                     "Not found"
                 )
-            }
+            }.withCors()
         } catch (exception: Exception) {
             newFixedLengthResponse(
                 Response.Status.INTERNAL_ERROR,
                 MIME_PLAINTEXT,
                 exception.message ?: "Server error"
-            )
+            ).withCors()
         }
     }
 
@@ -66,20 +70,26 @@ class MediaStreamingServer(
             Response.Status.OK,
             "application/json",
             json.toString()
-        ).also {
-            it.addHeader("Access-Control-Allow-Origin", "*")
-        }
+        )
     }
 
     private fun serveFile(session: IHTTPSession): Response {
         val encodedName = session.uri.removePrefix("/file/")
         val fileName = decode(encodedName)
         val file = listFiles().firstOrNull { it.name == fileName }
-            ?: return newFixedLengthResponse(
+        
+        println("📁 Serving file: $fileName")
+        println("📁 Uri: ${file?.uri}")
+        println("📁 Size: ${file?.size}")
+        println("📁 File exists: ${file != null}")
+
+        if (file == null) {
+            return newFixedLengthResponse(
                 Response.Status.NOT_FOUND,
                 MIME_PLAINTEXT,
                 "File not found"
             )
+        }
 
         val rangeHeader = session.headers["range"]
         val range = parseRange(rangeHeader, file.size)
@@ -112,6 +122,43 @@ class MediaStreamingServer(
             )
         }
         return response
+    }
+
+    private fun serveViewerHtml(session: IHTTPSession): Response {
+        val role = session.parameters["role"]?.firstOrNull()
+        if (role == null) {
+            val remoteIp = session.remoteIpAddress
+            val isHost = remoteIp == "127.0.0.1" || remoteIp == "0:0:0:0:0:0:0:1" || remoteIp == "localhost"
+            val detectedRole = if (isHost) "host" else "client"
+            val queryString = session.queryParameterString
+            val redirectUri = if (queryString.isNullOrBlank()) {
+                "${session.uri}?role=$detectedRole"
+            } else {
+                "${session.uri}?$queryString&role=$detectedRole"
+            }
+            val response = newFixedLengthResponse(Response.Status.REDIRECT, "text/html", "")
+            response.addHeader("Location", redirectUri)
+            return response
+        }
+
+        return try {
+            val inputStream = context.assets.open("viewer.html")
+            newChunkedResponse(Response.Status.OK, "text/html", inputStream)
+        } catch (e: Exception) {
+            newFixedLengthResponse(
+                Response.Status.NOT_FOUND,
+                MIME_PLAINTEXT,
+                "viewer.html not found in assets: ${e.message}"
+            )
+        }
+    }
+
+    private fun Response.withCors(): Response {
+        addHeader("Access-Control-Allow-Origin", "*")
+        addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        addHeader("Access-Control-Allow-Headers", "*")
+        addHeader("Content-Disposition", "inline")
+        return this
     }
 
     fun listFiles(): List<ServedMediaFile> {

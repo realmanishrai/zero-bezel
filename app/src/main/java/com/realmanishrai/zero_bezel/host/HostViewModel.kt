@@ -26,10 +26,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONException
 import org.json.JSONObject
+import com.realmanishrai.zero_bezel.viewer.WebViewSyncViewModel
 
 data class HostMediaFile(
     val name: String,
@@ -52,10 +54,23 @@ data class HostUiState(
         get() = selectedFile?.let { "http://$ipAddress:$MEDIA_HTTP_PORT/file/${it.encodedName}" }
 }
 
-class HostViewModel(application: Application) : AndroidViewModel(application) {
+class HostViewModel(application: Application) : AndroidViewModel(application), WebViewSyncViewModel {
     private val preferences = application.getSharedPreferences(PREFS_NAME, 0)
-    private val mediaServer = MediaStreamingServer(application.contentResolver)
+    private val mediaServer = MediaStreamingServer(application)
     private val clients = CopyOnWriteArrayList<ClientConnection>()
+
+    private val _syncEvents = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 64)
+    override val incomingSyncEvents = _syncEvents.asSharedFlow()
+
+    override fun sendSyncEvent(json: String) {
+        broadcast(json)
+    }
+
+    fun emitSyncEvent(event: String) {
+        viewModelScope.launch {
+            _syncEvents.emit(event)
+        }
+    }
 
     private val _uiState = MutableStateFlow(HostUiState())
     val uiState: StateFlow<HostUiState> = _uiState.asStateFlow()
@@ -88,16 +103,20 @@ class HostViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectFile(file: HostMediaFile) {
-        val url = file.toUrl()
+        val hostIp = NetworkUtils.getLocalWifiIpv4Address() ?: "127.0.0.1"
+        val fileUrl = "http://$hostIp:$MEDIA_HTTP_PORT/file/${file.encodedName}"
+        val encodedFileUrl = URLEncoder.encode(fileUrl, "UTF-8")
+        val viewerUrl = "http://$hostIp:$MEDIA_HTTP_PORT/viewer.html?file=$encodedFileUrl&type=${file.kind}"
+
         _uiState.value = _uiState.value.copy(
             selectedFile = file,
-            viewerState = file.toViewerState(url),
+            viewerState = file.toViewerState(viewerUrl),
             zoomPanState = ZoomPanState()
         )
         broadcast(
             JSONObject()
                 .put(KEY_TYPE, TYPE_OPEN_FILE)
-                .put(KEY_URL, url)
+                .put(KEY_URL, viewerUrl)
                 .put(KEY_FILENAME, file.name)
                 .put(KEY_MEDIA_TYPE, file.kind)
                 .toString()
@@ -189,7 +208,10 @@ class HostViewModel(application: Application) : AndroidViewModel(application) {
 
         controlServerJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                ServerSocket(HANDSHAKE_PORT).use { server ->
+                ServerSocket().apply {
+                    reuseAddress = true
+                    bind(java.net.InetSocketAddress(HANDSHAKE_PORT))
+                }.use { server ->
                     controlServerSocket = server
 
                     while (isActive && !server.isClosed) {
@@ -259,6 +281,7 @@ class HostViewModel(application: Application) : AndroidViewModel(application) {
                     broadcast(message.toString())
                 }
 
+                "navigate_back",
                 TYPE_NAV_BACK -> showFileList()
 
                 TYPE_ZOOM_PAN,
@@ -277,6 +300,11 @@ class HostViewModel(application: Application) : AndroidViewModel(application) {
                 TYPE_SEEK,
                 TYPE_SCROLL,
                 TYPE_PAGE -> broadcast(message.toString())
+
+                "scroll", "zoom", "video" -> {
+                    broadcast(rawMessage)
+                    emitSyncEvent(rawMessage)
+                }
             }
         } catch (_: JSONException) {
         }

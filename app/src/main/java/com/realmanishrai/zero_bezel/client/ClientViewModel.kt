@@ -25,10 +25,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import com.realmanishrai.zero_bezel.viewer.WebViewSyncViewModel
 
 data class ClientMediaFile(
     val name: String,
@@ -56,11 +58,24 @@ data class ClientUiState(
         get() = selectedFile?.let { "http://$hostIp:$MEDIA_HTTP_PORT/file/${it.encodedName}" }
 }
 
-class ClientViewModel : ViewModel() {
+class ClientViewModel : ViewModel(), WebViewSyncViewModel {
     private val clientId = UUID.randomUUID().toString()
 
     private val _uiState = MutableStateFlow(ClientUiState())
     val uiState: StateFlow<ClientUiState> = _uiState.asStateFlow()
+
+    private val _syncEvents = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 64)
+    override val incomingSyncEvents = _syncEvents.asSharedFlow()
+
+    override fun sendSyncEvent(json: String) {
+        sendJson(json)
+    }
+
+    fun emitSyncEvent(event: String) {
+        viewModelScope.launch {
+            _syncEvents.emit(event)
+        }
+    }
 
     private var connectJob: Job? = null
     private var controlListenJob: Job? = null
@@ -231,6 +246,7 @@ class ClientViewModel : ViewModel() {
                     )
                 }
 
+                "navigate_back",
                 TYPE_NAV_BACK -> showFileList()
 
                 TYPE_ZOOM_PAN,
@@ -270,6 +286,10 @@ class ClientViewModel : ViewModel() {
                 TYPE_PAGE -> _uiState.value = _uiState.value.copy(
                     pageNumber = message.optInt(KEY_NUMBER, 1)
                 )
+
+                "scroll", "zoom", "video" -> {
+                    emitSyncEvent(rawMessage)
+                }
             }
         } catch (_: JSONException) {
             _uiState.value = _uiState.value.copy(status = "Ignored malformed sync command.")

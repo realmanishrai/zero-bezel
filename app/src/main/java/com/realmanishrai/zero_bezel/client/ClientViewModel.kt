@@ -149,6 +149,10 @@ class ClientViewModel : ViewModel(), WebViewSyncViewModel {
 
     fun selectFile(file: ClientMediaFile) {
         val url = file.toUrl()
+        println("🎬 Client selecting file: ${file.name}")
+        println("🎬 File URL: $url")
+        println("🎬 Host IP: ${_uiState.value.hostIp}")
+        
         _uiState.value = _uiState.value.copy(
             selectedFile = file,
             viewerState = file.toViewerState(url),
@@ -298,12 +302,14 @@ class ClientViewModel : ViewModel(), WebViewSyncViewModel {
 
     private fun fetchFileList(hostIp: String) {
         val url = URL("http://$hostIp:$MEDIA_HTTP_PORT/list")
+        println("📋 Fetching file list from: $url")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = CONNECT_TIMEOUT_MS
         }
         try {
             val body = connection.inputStream.bufferedReader().use { it.readText() }
+            println("📋 File list response: $body")
             val files = JSONArray(body).let { array ->
                 List(array.length()) { index ->
                     val item = array.getJSONObject(index)
@@ -316,7 +322,14 @@ class ClientViewModel : ViewModel(), WebViewSyncViewModel {
                     )
                 }
             }
+            println("📋 Parsed ${files.size} files")
             _uiState.value = _uiState.value.copy(files = files)
+        } catch (e: Exception) {
+            println("❌ Failed to fetch file list: ${e.message}")
+            _uiState.value = _uiState.value.copy(
+                status = "Failed to fetch files: ${e.message}",
+                isConnected = false
+            )
         } finally {
             connection.disconnect()
         }

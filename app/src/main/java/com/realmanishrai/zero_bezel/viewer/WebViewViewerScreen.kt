@@ -65,6 +65,11 @@ fun WebViewViewerScreen(
                 settings.displayZoomControls = false
                 settings.mediaPlaybackRequiresUserGesture = false
 
+                // Enable WebView debugging for troubleshooting
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+                    android.webkit.WebView.setWebContentsDebuggingEnabled(true)
+                }
+
                 // Add JavaScript interface
                 addJavascriptInterface(JsInterface { event ->
                     viewModel.sendSyncEvent(event)

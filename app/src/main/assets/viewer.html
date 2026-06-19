@@ -77,6 +77,18 @@
                 debug.textContent = 'ERROR: No file URL';
                 return;
             }
+            
+            // Test connection to file URL first
+            try {
+                console.log('🔍 Testing file URL:', fileUrl);
+                const testResponse = await fetch(fileUrl, { method: 'HEAD' });
+                console.log('✅ File URL accessible, status:', testResponse.status);
+            } catch (e) {
+                console.error('❌ File URL not accessible:', e);
+                debug.textContent = 'ERROR: Cannot access file - ' + e.message;
+                return;
+            }
+            
             if (fileType === 'image') {
                 console.log('Creating image element with src:', fileUrl);
                 const img = document.createElement('img');

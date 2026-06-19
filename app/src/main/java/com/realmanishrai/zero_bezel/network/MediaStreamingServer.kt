@@ -53,6 +53,7 @@ class MediaStreamingServer(
 
     private fun serveList(): Response {
         val files = listFiles()
+        println("📋 Serving file list: ${files.size} files")
         val json = JSONArray()
         files.forEach { file ->
             json.put(
@@ -66,10 +67,12 @@ class MediaStreamingServer(
             )
         }
 
+        val jsonString = json.toString()
+        println("📋 File list JSON: $jsonString")
         return newFixedLengthResponse(
             Response.Status.OK,
             "application/json",
-            json.toString()
+            jsonString
         )
     }
 
@@ -84,21 +87,31 @@ class MediaStreamingServer(
         println("📁 File exists: ${file != null}")
 
         if (file == null) {
+            println("❌ File not found: $fileName")
             return newFixedLengthResponse(
                 Response.Status.NOT_FOUND,
                 MIME_PLAINTEXT,
-                "File not found"
+                "File not found: $fileName. Available files: ${listFiles().map { it.name }.joinToString()}"
             )
         }
 
         val rangeHeader = session.headers["range"]
         val range = parseRange(rangeHeader, file.size)
-        val pfd = contentResolver.openFileDescriptor(file.uri, "r")
-            ?: return newFixedLengthResponse(
+        
+        val pfd = try {
+            contentResolver.openFileDescriptor(file.uri, "r")
+        } catch (e: Exception) {
+            println("❌ Failed to open file descriptor: ${e.message}")
+            return newFixedLengthResponse(
                 Response.Status.INTERNAL_ERROR,
                 MIME_PLAINTEXT,
-                "Unable to open file"
+                "Unable to open file: ${e.message}"
             )
+        } ?: return newFixedLengthResponse(
+            Response.Status.INTERNAL_ERROR,
+            MIME_PLAINTEXT,
+            "Unable to open file - null ParcelFileDescriptor"
+        )
 
         val input = ParcelClosingInputStream(pfd)
         input.channel.position(range.start)
@@ -121,6 +134,7 @@ class MediaStreamingServer(
                 "bytes ${range.start}-${range.end}/${file.size}"
             )
         }
+        println("✅ Serving file successfully: $fileName (${range.length} bytes)")
         return response
     }
 
@@ -143,8 +157,11 @@ class MediaStreamingServer(
 
         return try {
             val inputStream = context.assets.open("viewer.html")
-            newChunkedResponse(Response.Status.OK, "text/html", inputStream)
+            val htmlContent = inputStream.bufferedReader().use { it.readText() }
+            println("✅ Serving viewer.html (${htmlContent.length} bytes)")
+            newFixedLengthResponse(Response.Status.OK, "text/html", htmlContent)
         } catch (e: Exception) {
+            println("❌ Failed to serve viewer.html: ${e.message}")
             newFixedLengthResponse(
                 Response.Status.NOT_FOUND,
                 MIME_PLAINTEXT,
@@ -162,7 +179,12 @@ class MediaStreamingServer(
     }
 
     fun listFiles(): List<ServedMediaFile> {
-        val treeUri = folderUri ?: return emptyList()
+        val treeUri = folderUri ?: run {
+            println("⚠️ No folder URI set")
+            return emptyList()
+        }
+        println("📂 Listing files from URI: $treeUri")
+        
         val treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
             treeUri,
@@ -176,29 +198,42 @@ class MediaStreamingServer(
         )
 
         val files = mutableListOf<ServedMediaFile>()
-        contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-            val sizeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
-            val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+        val cursor = contentResolver.query(childrenUri, projection, null, null, null)
+        if (cursor == null) {
+            println("❌ Failed to query content resolver - cursor is null")
+            return emptyList()
+        }
+        
+        cursor.use { 
+            val idIndex = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIndex = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val sizeIndex = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+            val mimeIndex = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
 
-            while (cursor.moveToNext()) {
-                val mimeType = cursor.getString(mimeIndex) ?: "application/octet-stream"
+            println("📊 Cursor count: ${it.count}")
+            while (it.moveToNext()) {
+                val mimeType = it.getString(mimeIndex) ?: "application/octet-stream"
                 if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) continue
-                val displayName = cursor.getString(nameIndex)
-                if (!displayName.isSupportedForMilestone()) continue
+                val displayName = it.getString(nameIndex)
+                if (!displayName.isSupportedForMilestone()) {
+                    println("⚠️ Skipping unsupported file: $displayName")
+                    continue
+                }
 
-                val documentId = cursor.getString(idIndex)
+                val documentId = it.getString(idIndex)
                 val documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+                val size = it.getLong(sizeIndex).coerceAtLeast(0L)
+                println("📄 Found file: $displayName ($size bytes, $mimeType)")
                 files += ServedMediaFile(
                     name = displayName,
                     uri = documentUri,
-                    size = cursor.getLong(sizeIndex).coerceAtLeast(0L),
+                    size = size,
                     mimeType = displayName.toMimeType(mimeType)
                 )
             }
         }
 
+        println("✅ Total files found: ${files.size}")
         return files.sortedBy { it.name.lowercase() }
     }
 

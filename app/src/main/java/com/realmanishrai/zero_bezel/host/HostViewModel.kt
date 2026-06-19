@@ -108,6 +108,11 @@ class HostViewModel(application: Application) : AndroidViewModel(application), W
         val encodedFileUrl = URLEncoder.encode(fileUrl, "UTF-8")
         val viewerUrl = "http://$hostIp:$MEDIA_HTTP_PORT/viewer.html?file=$encodedFileUrl&type=${file.kind}"
 
+        println("🎬 Host selecting file: ${file.name}")
+        println("🎬 File URL: $fileUrl")
+        println("🎬 Viewer URL: $viewerUrl")
+        println("🎬 Host IP: $hostIp")
+
         _uiState.value = _uiState.value.copy(
             selectedFile = file,
             viewerState = file.toViewerState(viewerUrl),
@@ -193,8 +198,27 @@ class HostViewModel(application: Application) : AndroidViewModel(application), W
             mediaServer.start(NanoStartTimeoutMs, false)
         }.onFailure { exception ->
             _uiState.value = _uiState.value.copy(
-                status = exception.message ?: "HTTP server failed"
+                status = "HTTP server failed: ${exception.message}"
             )
+        }
+        
+        // Verify server is running
+        viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(500)
+            try {
+                val testUrl = java.net.URL("http://127.0.0.1:$MEDIA_HTTP_PORT/test")
+                val connection = testUrl.openConnection() as java.net.HttpURLConnection
+                connection.connectTimeout = 2000
+                connection.readTimeout = 2000
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                if (response != "Server is working!") {
+                    _uiState.value = _uiState.value.copy(status = "HTTP server returned unexpected response")
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    status = "HTTP server verification failed: ${e.message}"
+                )
+            }
         }
     }
 

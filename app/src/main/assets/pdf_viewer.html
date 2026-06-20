@@ -8,11 +8,7 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
-        /* KEY FIX: html+body must have a fixed height so flex child can scroll */
-        html, body {
-            height: 100%;
-            overflow: hidden;
-        }
+        html, body { height: 100%; overflow: hidden; }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -24,28 +20,22 @@
 
         header {
             flex-shrink: 0;
-            width: 100%;
             padding: 10px 16px;
-            background: rgba(15, 23, 42, 0.92);
+            background: rgba(15,23,42,0.92);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
             border-bottom: 1px solid rgba(255,255,255,0.08);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
             gap: 8px;
-            z-index: 100;
+            flex-wrap: wrap;
         }
 
-        .title-area {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+        .title-area { display: flex; align-items: center; gap: 10px; }
 
         h1 {
-            font-size: 1.1rem;
+            font-size: 1.05rem;
             font-weight: 700;
             background: linear-gradient(to right, #38bdf8, #818cf8);
             -webkit-background-clip: text;
@@ -59,22 +49,20 @@
             padding: 6px 10px;
             border-radius: 8px;
             outline: none;
-            cursor: pointer;
             font-size: 0.82rem;
             max-width: 180px;
         }
-        select option { background: #1e293b; color: #f8fafc; }
+        select option { background: #1e293b; }
 
-        /* KEY FIX: viewer-container fills remaining space and scrolls */
+        /* ── SCROLL CONTAINER: must have a bounded height ── */
         #viewer-container {
-            flex: 1 1 0;
-            overflow: auto;
+            flex: 1 1 0;          /* takes remaining space */
+            overflow: auto;       /* scroll both axes */
             -webkit-overflow-scrolling: touch;
             background: #0f172a;
-            padding: 20px 16px;
+            padding: 20px 12px 80px; /* bottom pad for zoom bar */
         }
 
-        /* pages-container grows to content size, scrolling happens on parent */
         #pages-container {
             display: flex;
             flex-direction: column;
@@ -88,57 +76,63 @@
             box-shadow: 0 4px 24px rgba(0,0,0,0.5);
             overflow: hidden;
             flex-shrink: 0;
+            /* width/height set by JS */
         }
 
-        canvas {
-            display: block;
-        }
+        canvas { display: block; }
 
+        /* ── ZOOM BAR ── */
         #zoom-bar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
             flex-shrink: 0;
             display: flex;
             justify-content: center;
             align-items: center;
-            gap: 0;
             padding: 8px 16px;
-            background: rgba(15, 23, 42, 0.92);
+            background: rgba(15,23,42,0.95);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
             border-top: 1px solid rgba(255,255,255,0.08);
+            z-index: 100;
+            gap: 0;
         }
 
-        .zoom-btn {
-            background: rgba(255,255,255,0.06);
+        .zbtn {
+            background: rgba(255,255,255,0.07);
             border: 1px solid rgba(255,255,255,0.12);
             color: #f8fafc;
-            padding: 8px 18px;
-            font-size: 1rem;
+            padding: 9px 20px;
+            font-size: 1.05rem;
             cursor: pointer;
             transition: background 0.15s;
+            touch-action: manipulation;
         }
-        .zoom-btn:first-child { border-radius: 8px 0 0 8px; }
-        .zoom-btn:last-child  { border-radius: 0 8px 8px 0; }
-        .zoom-btn:hover { background: rgba(56,189,248,0.18); }
+        .zbtn:first-child { border-radius: 8px 0 0 8px; }
+        .zbtn:last-child  { border-radius: 0 8px 8px 0; }
+        .zbtn:hover, .zbtn:active { background: rgba(56,189,248,0.25); }
 
         #zoom-label {
-            background: rgba(255,255,255,0.04);
-            border-top: 1px solid rgba(255,255,255,0.12);
-            border-bottom: 1px solid rgba(255,255,255,0.12);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-left: none; border-right: none;
             color: #94a3b8;
-            padding: 8px 14px;
+            padding: 9px 14px;
             font-size: 0.82rem;
-            min-width: 56px;
+            min-width: 58px;
             text-align: center;
+            background: rgba(255,255,255,0.03);
         }
 
         #status {
             position: fixed;
-            bottom: 60px;
-            right: 16px;
-            background: rgba(15,23,42,0.85);
+            bottom: 58px;
+            right: 14px;
+            background: rgba(15,23,42,0.88);
             backdrop-filter: blur(8px);
             border: 1px solid rgba(255,255,255,0.1);
-            padding: 5px 12px;
+            padding: 4px 11px;
             border-radius: 20px;
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             color: #38bdf8;
             z-index: 200;
             pointer-events: none;
@@ -152,19 +146,18 @@
         <h1>📄 PDF</h1>
         <select id="file-select"><option value="">Loading…</option></select>
     </div>
-    <span id="page-count" style="font-size:0.82rem;color:#94a3b8;">Pages: –</span>
+    <span id="page-count" style="font-size:0.82rem;color:#64748b;">–</span>
 </header>
 
 <div id="viewer-container">
     <div id="pages-container"></div>
 </div>
 
-<!-- Permanent zoom controls at bottom -->
 <div id="zoom-bar">
-    <button class="zoom-btn" id="btn-zoom-out">−</button>
+    <button class="zbtn" id="btn-out">−</button>
     <span id="zoom-label">100%</span>
-    <button class="zoom-btn" id="btn-zoom-reset">Fit</button>
-    <button class="zoom-btn" id="btn-zoom-in">+</button>
+    <button class="zbtn" id="btn-fit">Fit</button>
+    <button class="zbtn" id="btn-in">+</button>
 </div>
 
 <div id="status">Loading…</div>
@@ -173,28 +166,24 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc =
         'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-    const container   = document.getElementById('viewer-container');
-    const pagesDiv    = document.getElementById('pages-container');
-    const fileSelect  = document.getElementById('file-select');
-    const pageCount   = document.getElementById('page-count');
-    const zoomLabel   = document.getElementById('zoom-label');
-    const statusEl    = document.getElementById('status');
+    const container  = document.getElementById('viewer-container');
+    const pagesDiv   = document.getElementById('pages-container');
+    const fileSelect = document.getElementById('file-select');
+    const pageCount  = document.getElementById('page-count');
+    const zoomLabel  = document.getElementById('zoom-label');
+    const statusEl   = document.getElementById('status');
 
     let pdfDoc    = null;
     let fitScale  = 1.0;
-    let zoomLevel = 1.0;   // multiplier on top of fitScale
+    let zoomLevel = 1.0;
 
-    const RENDER_DPR = Math.min(window.devicePixelRatio || 1, 2);
+    const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
-    function setStatus(t) { statusEl.textContent = t; }
-
+    function status(t) { statusEl.textContent = t; }
     function effectiveScale() { return fitScale * zoomLevel; }
+    function updateLabel() { zoomLabel.textContent = Math.round(zoomLevel * 100) + '%'; }
 
-    function updateZoomLabel() {
-        zoomLabel.textContent = Math.round(zoomLevel * 100) + '%';
-    }
-
-    // ── File list ────────────────────────────────────────────────────────────
+    // ── Fetch file list ──────────────────────────────────────────────────────
     async function fetchFileList() {
         try {
             const res   = await fetch('/list');
@@ -202,8 +191,8 @@
             const pdfs  = files.filter(f => f.type === 'pdf');
             fileSelect.innerHTML = '';
             if (!pdfs.length) {
-                fileSelect.innerHTML = '<option value="">No PDFs found</option>';
-                setStatus('No PDFs'); return;
+                fileSelect.innerHTML = '<option>No PDFs found</option>';
+                status('No PDFs'); return;
             }
             pdfs.forEach(f => {
                 const o = document.createElement('option');
@@ -211,168 +200,132 @@
                 fileSelect.appendChild(o);
             });
             fileSelect.value = pdfs[0].id;
-            loadPDF(pdfs[0].id);
-        } catch(e) { setStatus('Error loading list'); }
+            await loadPDF(pdfs[0].id);
+        } catch(e) { status('Error: ' + e.message); }
     }
 
     // ── Load PDF ─────────────────────────────────────────────────────────────
     async function loadPDF(docId) {
         if (!docId) return;
-        setStatus('Loading…');
+        status('Loading…');
         pagesDiv.innerHTML = '';
         try {
-            pdfDoc = await pdfjsLib.getDocument(`/file?id=${encodeURIComponent(docId)}`).promise;
-            pageCount.textContent = `Pages: ${pdfDoc.numPages}`;
+            pdfDoc = await pdfjsLib.getDocument('/file?id=' + encodeURIComponent(docId)).promise;
+            pageCount.textContent = pdfDoc.numPages + ' pages';
 
-            // Calculate fit-width scale from first page
-            const firstPage = await pdfDoc.getPage(1);
-            const vp1 = firstPage.getViewport({ scale: 1 });
-            const avail = container.clientWidth - 32;
-            fitScale  = Math.max(0.3, avail / vp1.width);
+            const fp  = await pdfDoc.getPage(1);
+            const vp1 = fp.getViewport({ scale: 1 });
+            fitScale  = Math.max(0.3, (container.clientWidth - 24) / vp1.width);
             zoomLevel = 1.0;
-            updateZoomLabel();
+            updateLabel();
 
-            await renderAllPages();
-        } catch(e) { setStatus('Error: ' + e.message); }
+            await renderAll();
+        } catch(e) { status('Error: ' + e.message); }
     }
 
     // ── Render all pages ─────────────────────────────────────────────────────
-    async function renderAllPages() {
+    async function renderAll() {
         pagesDiv.innerHTML = '';
-        setStatus('Rendering…');
-        const scale = effectiveScale();
+        status('Rendering…');
+        const sc = effectiveScale();
 
         for (let n = 1; n <= pdfDoc.numPages; n++) {
-            const page     = await pdfDoc.getPage(n);
-            const viewport = page.getViewport({ scale: scale * RENDER_DPR });
+            const page = await pdfDoc.getPage(n);
+            const vp   = page.getViewport({ scale: sc * DPR });
 
-            const wrapper  = document.createElement('div');
-            wrapper.className = 'page-wrapper';
-            wrapper.style.width  = (viewport.width  / RENDER_DPR) + 'px';
-            wrapper.style.height = (viewport.height / RENDER_DPR) + 'px';
+            const wrap = document.createElement('div');
+            wrap.className = 'page-wrapper';
+            wrap.style.width  = (vp.width  / DPR) + 'px';
+            wrap.style.height = (vp.height / DPR) + 'px';
 
-            const canvas  = document.createElement('canvas');
-            canvas.width  = viewport.width;
-            canvas.height = viewport.height;
-            canvas.style.width  = (viewport.width  / RENDER_DPR) + 'px';
-            canvas.style.height = (viewport.height / RENDER_DPR) + 'px';
+            const cv  = document.createElement('canvas');
+            cv.width  = vp.width;
+            cv.height = vp.height;
+            cv.style.width  = (vp.width  / DPR) + 'px';
+            cv.style.height = (vp.height / DPR) + 'px';
 
-            wrapper.appendChild(canvas);
-            pagesDiv.appendChild(wrapper);
+            wrap.appendChild(cv);
+            pagesDiv.appendChild(wrap);
 
-            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+            await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
         }
-        setStatus('Ready');
+        status('Ready');
     }
 
-    // ── Zoom helpers ─────────────────────────────────────────────────────────
-    function changeZoom(newLevel) {
-        const oldScrollRatio = container.scrollTop / (container.scrollHeight || 1);
+    // ── Zoom ─────────────────────────────────────────────────────────────────
+    async function setZoom(newLevel) {
+        if (!pdfDoc) return;
+        const ratio = container.scrollTop / (container.scrollHeight || 1);
         zoomLevel = Math.min(Math.max(newLevel, 0.25), 4.0);
-        updateZoomLabel();
-        renderAllPages().then(() => {
-            container.scrollTop = oldScrollRatio * container.scrollHeight;
-        });
+        updateLabel();
+        await renderAll();
+        container.scrollTop = ratio * container.scrollHeight;
     }
 
-    document.getElementById('btn-zoom-in').addEventListener('click',  () => changeZoom(zoomLevel + 0.25));
-    document.getElementById('btn-zoom-out').addEventListener('click', () => changeZoom(zoomLevel - 0.25));
-    document.getElementById('btn-zoom-reset').addEventListener('click',() => changeZoom(1.0));
+    document.getElementById('btn-in') .addEventListener('click', () => setZoom(zoomLevel + 0.25));
+    document.getElementById('btn-out').addEventListener('click', () => setZoom(zoomLevel - 0.25));
+    document.getElementById('btn-fit').addEventListener('click', () => setZoom(1.0));
     fileSelect.addEventListener('change', e => loadPDF(e.target.value));
 
-    // ── Pinch-to-zoom (touch) ────────────────────────────────────────────────
-    let pinchStart   = 0;
-    let pinchBase    = 1.0;
-    let isPinching   = false;
-    let pinchMidX    = 0;
-    let pinchMidY    = 0;
-    let pinchEndedAt = 0;
+    // ── Pinch to zoom ────────────────────────────────────────────────────────
+    let pinchDist0   = 0;
+    let pinchZoom0   = 1.0;
+    let pinching     = false;
+    let pinchEndTime = 0;
 
     container.addEventListener('touchstart', e => {
         if (e.touches.length === 2) {
-            isPinching  = true;
-            pinchStart  = Math.hypot(
+            pinching  = true;
+            pinchDist0 = Math.hypot(
                 e.touches[1].clientX - e.touches[0].clientX,
-                e.touches[1].clientY - e.touches[0].clientY
-            );
-            pinchBase = zoomLevel;
-            const r = container.getBoundingClientRect();
-            pinchMidX = ((e.touches[0].clientX + e.touches[1].clientX) / 2) - r.left + container.scrollLeft;
-            pinchMidY = ((e.touches[0].clientY + e.touches[1].clientY) / 2) - r.top  + container.scrollTop;
+                e.touches[1].clientY - e.touches[0].clientY);
+            pinchZoom0 = zoomLevel;
             e.preventDefault();
         }
     }, { passive: false });
 
     container.addEventListener('touchmove', e => {
-        if (!isPinching || e.touches.length < 2) return;
+        if (!pinching || e.touches.length < 2) return;
         e.preventDefault();
-        const dist = Math.hypot(
+        const d = Math.hypot(
             e.touches[1].clientX - e.touches[0].clientX,
-            e.touches[1].clientY - e.touches[0].clientY
-        );
-        const raw = pinchBase * (dist / pinchStart);
-        zoomLevel  = Math.min(Math.max(raw, 0.25), 4.0);
-        updateZoomLabel();
-
-        // Resize wrappers in-place (no re-render) for live feel
-        const scale = effectiveScale();
-        const wraps = pagesDiv.querySelectorAll('.page-wrapper');
-        wraps.forEach(w => {
-            const c = w.querySelector('canvas');
-            const cssW = c.width  / RENDER_DPR;
-            const cssH = c.height / RENDER_DPR;
-            const scaleRatio = (scale * RENDER_DPR) / (c.width / (parseFloat(w.style.width)));
-            // simpler: just scale width/height proportionally
-            const ratio = zoomLevel / pinchBase;
-            w.style.width  = (parseFloat(w.style.width)  * ratio / (zoomLevel / pinchBase > 1 ? ratio : ratio)) + 'px';
+            e.touches[1].clientY - e.touches[0].clientY);
+        // Live: just resize existing wrappers (no re-render)
+        const newZoom  = Math.min(Math.max(pinchZoom0 * (d / pinchDist0), 0.25), 4.0);
+        const ratio    = newZoom / zoomLevel;
+        zoomLevel      = newZoom;
+        updateLabel();
+        document.querySelectorAll('.page-wrapper').forEach(w => {
+            w.style.width  = (parseFloat(w.style.width)  * ratio) + 'px';
+            w.style.height = (parseFloat(w.style.height) * ratio) + 'px';
         });
-        // Actually just apply direct layout scale
-        applyLiveZoom(scale);
     }, { passive: false });
-
-    // Live zoom during pinch (no re-render, just resize divs)
-    function applyLiveZoom(targetScale) {
-        const wraps = pagesDiv.querySelectorAll('.page-wrapper');
-        wraps.forEach(w => {
-            const canvas = w.querySelector('canvas');
-            const displayW = canvas.width  / RENDER_DPR * (zoomLevel / pinchBase);
-            const displayH = canvas.height / RENDER_DPR * (zoomLevel / pinchBase);
-            w.style.width  = displayW + 'px';
-            w.style.height = displayH + 'px';
-        });
-    }
 
     container.addEventListener('touchend', e => {
-        if (isPinching && e.touches.length < 2) {
-            isPinching   = false;
-            pinchEndedAt = Date.now();
-            // Commit: re-render at new zoom level for crisp output
-            const savedScroll = container.scrollTop;
-            const oldH = container.scrollHeight;
-            renderAllPages().then(() => {
-                container.scrollTop = savedScroll * (container.scrollHeight / (oldH || 1));
-            });
+        if (pinching && e.touches.length < 2) {
+            pinching     = false;
+            pinchEndTime = Date.now();
+            // Re-render at committed zoom for crisp result
+            const ratio = container.scrollTop / (container.scrollHeight || 1);
+            renderAll().then(() => { container.scrollTop = ratio * container.scrollHeight; });
         }
     }, { passive: true });
-
-    // ── Ctrl-wheel zoom (desktop/emulator) ───────────────────────────────────
-    container.addEventListener('wheel', e => {
-        if (!e.ctrlKey) return;
-        e.preventDefault();
-        const delta = e.deltaY < 0 ? 0.15 : -0.15;
-        changeZoom(zoomLevel + delta);
-    }, { passive: false });
 
     // ── Double-tap zoom ──────────────────────────────────────────────────────
     let lastTap = 0;
     container.addEventListener('touchend', e => {
-        if (isPinching || Date.now() - pinchEndedAt < 600) return;
+        if (pinching || Date.now() - pinchEndTime < 500) return;
         const now = Date.now();
-        if (now - lastTap < 300) {
-            changeZoom(zoomLevel > 1.05 ? 1.0 : 2.0);
-        }
+        if (now - lastTap < 280) setZoom(zoomLevel > 1.1 ? 1.0 : 2.0);
         lastTap = now;
     }, { passive: true });
+
+    // ── Ctrl+wheel (desktop) ─────────────────────────────────────────────────
+    container.addEventListener('wheel', e => {
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        setZoom(zoomLevel + (e.deltaY < 0 ? 0.15 : -0.15));
+    }, { passive: false });
 
     // ── Init ─────────────────────────────────────────────────────────────────
     fetchFileList();

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ZeroBezel Video Player</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #090d16, #111827);
+            color: #f3f4f6;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow: hidden;
+        }
+        header {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+        .title-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        h1 {
+            font-size: 1.15rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        select {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #f8fafc;
+            padding: 6px 12px;
+            border-radius: 8px;
+            outline: none;
+            cursor: pointer;
+            font-size: 0.85rem;
+            max-width: 250px;
+        }
+        select option {
+            background: #1e293b;
+            color: #f8fafc;
+        }
+        .player-container {
+            flex: 1;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 24px;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 12px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.4);
+            width: 100%;
+            max-width: 800px;
+            display: flex;
+            flex-direction: column;
+        }
+        video {
+            width: 100%;
+            border-radius: 12px;
+            outline: none;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+            background: #000;
+        }
+        .info {
+            padding: 12px 4px 4px 4px;
+            font-size: 0.9rem;
+            color: #9ca3af;
+            display: flex;
+            justify-content: space-between;
+        }
+        #status {
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            color: #38bdf8;
+            z-index: 200;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="title-area">
+            <h1>🎬 Video Player</h1>
+            <select id="video-select">
+                <option value="">Loading videos...</option>
+            </select>
+        </div>
+    </header>
+
+    <div class="player-container">
+        <div class="glass-card">
+            <video id="main-video" controls autoplay muted>
+                Your browser does not support the video tag.
+            </video>
+            <div class="info">
+                <span id="video-title">No Video Selected</span>
+                <span id="duration-info">00:00</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="status">Loading...</div>
+
+    <script>
+        const video = document.getElementById('main-video');
+        const videoSelect = document.getElementById('video-select');
+        const videoTitle = document.getElementById('video-title');
+        const durationInfo = document.getElementById('duration-info');
+        const statusEl = document.getElementById('status');
+
+        function setStatus(text) {
+            statusEl.textContent = text;
+        }
+
+        async function fetchVideoList() {
+            try {
+                const res = await fetch('/list');
+                const files = await res.json();
+                const videos = files.filter(f => f.type === 'video');
+
+                videoSelect.innerHTML = '';
+                if (videos.length === 0) {
+                    videoSelect.innerHTML = '<option value="">No videos found</option>';
+                    setStatus('No videos available');
+                    return;
+                }
+
+                videos.forEach(v => {
+                    const opt = document.createElement('option');
+                    opt.value = v.id;
+                    opt.textContent = v.name;
+                    videoSelect.appendChild(opt);
+                });
+
+                // Auto-load first video
+                videoSelect.value = videos[0].id;
+                loadVideo(videos[0].id, videos[0].name);
+            } catch (e) {
+                console.error(e);
+                setStatus('Error loading video list');
+            }
+        }
+
+        function loadVideo(id, name) {
+            if (!id) return;
+            setStatus('Loading video...');
+            videoTitle.textContent = name;
+            video.src = `/file?id=${encodeURIComponent(id)}`;
+            video.load();
+            video.play().then(() => {
+                setStatus('Playing');
+            }).catch(e => {
+                console.error(e);
+                setStatus('Auto-play paused. Tap to play.');
+            });
+        }
+
+        videoSelect.addEventListener('change', (e) => {
+            const selectedOpt = videoSelect.options[videoSelect.selectedIndex];
+            loadVideo(e.target.value, selectedOpt.textContent);
+        });
+
+        video.addEventListener('loadedmetadata', () => {
+            const minutes = Math.floor(video.duration / 60);
+            const seconds = Math.floor(video.duration % 60);
+            durationInfo.textContent = `Duration: ${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+        });
+
+        video.addEventListener('error', (e) => {
+            setStatus('Error playing video');
+        });
+
+        // Initialize
+        fetchVideoList();
+    </script>
+</body>
+</html>

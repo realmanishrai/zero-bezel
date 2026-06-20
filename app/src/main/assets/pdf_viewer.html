@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ZeroBezel PDF Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow: hidden;
+        }
+        header {
+            width: 100%;
+            padding: 10px 16px;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .title-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        h1 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        select {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #f8fafc;
+            padding: 6px 12px;
+            border-radius: 8px;
+            outline: none;
+            cursor: pointer;
+            font-size: 0.85rem;
+            max-width: 200px;
+        }
+        select option {
+            background: #1e293b;
+            color: #f8fafc;
+        }
+        #viewer-container {
+            flex: 1;
+            width: 100%;
+            overflow: auto;
+            padding: 16px;
+            background: #0f172a;
+            -webkit-overflow-scrolling: touch;
+        }
+        .pages-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            width: fit-content;
+            min-width: 100%;
+            margin: 0 auto;
+        }
+        .page-wrapper {
+            background: #1e293b;
+            padding: 4px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-sizing: content-box;
+        }
+        canvas {
+            display: block;
+            border-radius: 4px;
+            width: 100%;
+            height: 100%;
+            background: white;
+        }
+        #status {
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            color: #38bdf8;
+            z-index: 200;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="title-area">
+            <h1>📄 PDF Reader</h1>
+            <select id="file-select">
+                <option value="">Loading files...</option>
+            </select>
+        </div>
+        <span id="page-count-info" style="font-size: 0.85rem; color: #94a3b8;">Pages: 0</span>
+    </header>
+
+    <div id="viewer-container">
+        <div class="pages-container" id="pages-container">
+            <!-- Dynamic Canvases for pages -->
+        </div>
+    </div>
+
+    <div id="status">Loading...</div>
+
+    <script>
+        let pdfDoc = null;
+        let currentScale = 1.0;
+        let fitScale = 1.0;
+        let currentDocId = '';
+        
+        const pagesContainer = document.getElementById('pages-container');
+        const fileSelect = document.getElementById('file-select');
+        const statusEl = document.getElementById('status');
+        const pageCountInfo = document.getElementById('page-count-info');
+        const viewerContainer = document.getElementById('viewer-container');
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        function setStatus(text) {
+            statusEl.textContent = text;
+        }
+
+        async function fetchFileList() {
+            try {
+                const res = await fetch('/list');
+                const files = await res.json();
+                const pdfs = files.filter(f => f.type === 'pdf');
+                
+                fileSelect.innerHTML = '';
+                if (pdfs.length === 0) {
+                    fileSelect.innerHTML = '<option value="">No PDF files found</option>';
+                    setStatus('No PDFs available');
+                    return;
+                }
+
+                pdfs.forEach(f => {
+                    const opt = document.createElement('option');
+                    opt.value = f.id;
+                    opt.textContent = f.name;
+                    fileSelect.appendChild(opt);
+                });
+
+                // Auto-load first file
+                fileSelect.value = pdfs[0].id;
+                loadPDF(pdfs[0].id);
+            } catch (e) {
+                console.error(e);
+                setStatus('Error loading file list');
+            }
+        }
+
+        function loadPDF(docId) {
+            if (!docId) return;
+            currentDocId = docId;
+            setStatus('Loading PDF...');
+            
+            const fileUrl = `/file?id=${encodeURIComponent(docId)}`;
+            
+            pdfjsLib.getDocument(fileUrl).promise.then(pdfDoc_ => {
+                pdfDoc = pdfDoc_;
+                setStatus('PDF Loaded');
+                pageCountInfo.textContent = `Pages: ${pdfDoc.numPages}`;
+                
+                // Get first page to calculate initial scale to fit container width
+                pdfDoc.getPage(1).then(page => {
+                    const viewport = page.getViewport({ scale: 1.0 });
+                    const containerWidth = viewerContainer.clientWidth - 32;
+                    fitScale = Math.min(containerWidth / viewport.width, 1.25);
+                    currentScale = fitScale;
+                    renderAllPages();
+                });
+            }).catch(err => {
+                console.error(err);
+                setStatus('Error loading PDF: ' + err.message);
+            });
+        }
+
+        function renderAllPages() {
+            if (!pdfDoc) return;
+            pagesContainer.innerHTML = '';
+            setStatus('Rendering pages...');
+
+            let renderPromise = Promise.resolve();
+
+            for (let num = 1; num <= pdfDoc.numPages; num++) {
+                const pageWrapper = document.createElement('div');
+                pageWrapper.className = 'page-wrapper';
+                
+                const canvas = document.createElement('canvas');
+                pageWrapper.appendChild(canvas);
+                pagesContainer.appendChild(pageWrapper);
+
+                renderPromise = renderPromise.then(() => {
+                    return pdfDoc.getPage(num).then(page => {
+                        const ctx = canvas.getContext('2d');
+                        // Render at crisp 1.5x resolution
+                        const renderScale = 1.5;
+                        const viewport = page.getViewport({ scale: renderScale });
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+
+                        const baseViewport = page.getViewport({ scale: 1.0 });
+                        pageWrapper.dataset.width = baseViewport.width;
+                        pageWrapper.dataset.height = baseViewport.height;
+                        
+                        // Scale visually in layout
+                        pageWrapper.style.width = (baseViewport.width * currentScale) + 'px';
+                        pageWrapper.style.height = (baseViewport.height * currentScale) + 'px';
+
+                        const renderContext = {
+                            canvasContext: ctx,
+                            viewport: viewport
+                        };
+                        return page.render(renderContext).promise;
+                    });
+                });
+            }
+
+            renderPromise.then(() => {
+                setStatus('Ready');
+            }).catch(err => {
+                console.error(err);
+                setStatus('Render error');
+            });
+        }
+
+        function applyZoom() {
+            const wrappers = document.querySelectorAll('.page-wrapper');
+            wrappers.forEach(wrapper => {
+                const baseWidth = parseFloat(wrapper.dataset.width);
+                const baseHeight = parseFloat(wrapper.dataset.height);
+                wrapper.style.width = (baseWidth * currentScale) + 'px';
+                wrapper.style.height = (baseHeight * currentScale) + 'px';
+            });
+        }
+
+        fileSelect.addEventListener('change', (e) => {
+            loadPDF(e.target.value);
+        });
+
+        // Touch Zoom and Pan Gestures
+        let initialTouchDist = 0;
+        let initialScale = 1.0;
+        let isPinching = false;
+        let pinchCenterX = 0;
+        let pinchCenterY = 0;
+        let lastPinchEndTime = 0;
+
+        viewerContainer.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                isPinching = true;
+                initialTouchDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                initialScale = currentScale;
+
+                const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+                const rect = viewerContainer.getBoundingClientRect();
+                pinchCenterX = midX - rect.left;
+                pinchCenterY = midY - rect.top;
+                
+                e.preventDefault();
+            }
+        }, { passive: false });
+
+        viewerContainer.addEventListener('touchmove', (e) => {
+            if (isPinching && e.touches.length === 2) {
+                e.preventDefault();
+
+                const dist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+
+                const factor = dist / initialTouchDist;
+                let newScale = initialScale * factor;
+
+                // Clamp scale between 0.3x and 4.0x
+                newScale = Math.min(Math.max(newScale, 0.3), 4.0);
+
+                if (Math.abs(newScale - currentScale) > 0.005) {
+                    const oldScale = currentScale;
+                    currentScale = newScale;
+
+                    const scrollLeft = viewerContainer.scrollLeft;
+                    const scrollTop = viewerContainer.scrollTop;
+
+                    applyZoom();
+
+                    viewerContainer.scrollLeft = (scrollLeft + pinchCenterX) * (newScale / oldScale) - pinchCenterX;
+                    viewerContainer.scrollTop = (scrollTop + pinchCenterY) * (newScale / oldScale) - pinchCenterY;
+                }
+            }
+        }, { passive: false });
+
+        viewerContainer.addEventListener('touchend', (e) => {
+            if (isPinching && e.touches.length < 2) {
+                isPinching = false;
+                lastPinchEndTime = new Date().getTime();
+            }
+        });
+
+        // Double tap zoom logic
+        let lastTapTime = 0;
+        viewerContainer.addEventListener('touchend', (e) => {
+            const currentTime = new Date().getTime();
+            if (isPinching || (currentTime - lastPinchEndTime < 500)) {
+                return;
+            }
+            const tapLength = currentTime - lastTapTime;
+            if (tapLength < 300 && tapLength > 0) {
+                const touch = e.changedTouches[0];
+                const rect = viewerContainer.getBoundingClientRect();
+                const tapX = touch.clientX - rect.left;
+                const tapY = touch.clientY - rect.top;
+
+                let newScale = currentScale > (fitScale + 0.05) ? fitScale : fitScale * 2.5;
+                const oldScale = currentScale;
+                currentScale = newScale;
+
+                const scrollLeft = viewerContainer.scrollLeft;
+                const scrollTop = viewerContainer.scrollTop;
+
+                applyZoom();
+
+                viewerContainer.scrollLeft = (scrollLeft + tapX) * (newScale / oldScale) - tapX;
+                viewerContainer.scrollTop = (scrollTop + tapY) * (newScale / oldScale) - tapY;
+
+                e.preventDefault();
+            }
+            lastTapTime = currentTime;
+        });
+
+        // Mouse Wheel Ctrl+Zoom
+        viewerContainer.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                const delta = -e.deltaY;
+                const factor = delta > 0 ? 1.1 : 0.9;
+                let newScale = currentScale * factor;
+                newScale = Math.min(Math.max(newScale, 0.3), 4.0);
+
+                if (Math.abs(newScale - currentScale) > 0.005) {
+                    const oldScale = currentScale;
+                    currentScale = newScale;
+
+                    const rect = viewerContainer.getBoundingClientRect();
+                    const mouseX = e.clientX - rect.left;
+                    const mouseY = e.clientY - rect.top;
+
+                    const scrollLeft = viewerContainer.scrollLeft;
+                    const scrollTop = viewerContainer.scrollTop;
+
+                    applyZoom();
+
+                    viewerContainer.scrollLeft = (scrollLeft + mouseX) * (newScale / oldScale) - mouseX;
+                    viewerContainer.scrollTop = (scrollTop + mouseY) * (newScale / oldScale) - mouseY;
+                }
+            }
+        }, { passive: false });
+
+        // Initialize
+        fetchFileList();
+    </script>
+</body>
+</html>

@@ -50,6 +50,8 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.nanohttpd)
     implementation(libs.androidx.webkit)
+    implementation(libs.zxing.core)
+    implementation(libs.play.services.code.scanner)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

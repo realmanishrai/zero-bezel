@@ -7,37 +7,43 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background: #0f172a;
-            color: #f8fafc;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+
+        /* KEY FIX: html+body must have a fixed height so flex child can scroll */
+        html, body {
+            height: 100%;
             overflow: hidden;
         }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            flex-direction: column;
+        }
+
         header {
+            flex-shrink: 0;
             width: 100%;
             padding: 10px 16px;
-            background: rgba(15, 23, 42, 0.85);
+            background: rgba(15, 23, 42, 0.92);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-            position: sticky;
-            top: 0;
-            z-index: 100;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
             gap: 8px;
+            z-index: 100;
         }
+
         .title-area {
             display: flex;
             align-items: center;
             gap: 12px;
         }
+
         h1 {
             font-size: 1.1rem;
             font-weight: 700;
@@ -45,352 +51,331 @@
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
+
         select {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.15);
             color: #f8fafc;
-            padding: 6px 12px;
+            padding: 6px 10px;
             border-radius: 8px;
             outline: none;
             cursor: pointer;
-            font-size: 0.85rem;
-            max-width: 200px;
+            font-size: 0.82rem;
+            max-width: 180px;
         }
-        select option {
-            background: #1e293b;
-            color: #f8fafc;
-        }
+        select option { background: #1e293b; color: #f8fafc; }
+
+        /* KEY FIX: viewer-container fills remaining space and scrolls */
         #viewer-container {
-            flex: 1;
-            width: 100%;
+            flex: 1 1 0;
             overflow: auto;
-            padding: 16px;
-            background: #0f172a;
             -webkit-overflow-scrolling: touch;
+            background: #0f172a;
+            padding: 20px 16px;
         }
-        .pages-container {
+
+        /* pages-container grows to content size, scrolling happens on parent */
+        #pages-container {
             display: flex;
             flex-direction: column;
             align-items: center;
             gap: 16px;
-            width: fit-content;
-            min-width: 100%;
-            margin: 0 auto;
         }
+
         .page-wrapper {
-            background: #1e293b;
-            padding: 4px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #zoom-bar {
+            flex-shrink: 0;
             display: flex;
             justify-content: center;
             align-items: center;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            box-sizing: content-box;
+            gap: 0;
+            padding: 8px 16px;
+            background: rgba(15, 23, 42, 0.92);
+            border-top: 1px solid rgba(255,255,255,0.08);
         }
-        canvas {
-            display: block;
-            border-radius: 4px;
-            width: 100%;
-            height: 100%;
-            background: white;
+
+        .zoom-btn {
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: #f8fafc;
+            padding: 8px 18px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.15s;
         }
+        .zoom-btn:first-child { border-radius: 8px 0 0 8px; }
+        .zoom-btn:last-child  { border-radius: 0 8px 8px 0; }
+        .zoom-btn:hover { background: rgba(56,189,248,0.18); }
+
+        #zoom-label {
+            background: rgba(255,255,255,0.04);
+            border-top: 1px solid rgba(255,255,255,0.12);
+            border-bottom: 1px solid rgba(255,255,255,0.12);
+            color: #94a3b8;
+            padding: 8px 14px;
+            font-size: 0.82rem;
+            min-width: 56px;
+            text-align: center;
+        }
+
         #status {
             position: fixed;
-            bottom: 16px;
+            bottom: 60px;
             right: 16px;
-            background: rgba(15, 23, 42, 0.8);
+            background: rgba(15,23,42,0.85);
             backdrop-filter: blur(8px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 6px 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 5px 12px;
             border-radius: 20px;
-            font-size: 0.75rem;
+            font-size: 0.72rem;
             color: #38bdf8;
             z-index: 200;
+            pointer-events: none;
         }
     </style>
 </head>
 <body>
-    <header>
-        <div class="title-area">
-            <h1>📄 PDF Reader</h1>
-            <select id="file-select">
-                <option value="">Loading files...</option>
-            </select>
-        </div>
-        <span id="page-count-info" style="font-size: 0.85rem; color: #94a3b8;">Pages: 0</span>
-    </header>
 
-    <div id="viewer-container">
-        <div class="pages-container" id="pages-container">
-            <!-- Dynamic Canvases for pages -->
-        </div>
+<header>
+    <div class="title-area">
+        <h1>📄 PDF</h1>
+        <select id="file-select"><option value="">Loading…</option></select>
     </div>
+    <span id="page-count" style="font-size:0.82rem;color:#94a3b8;">Pages: –</span>
+</header>
 
-    <div id="status">Loading...</div>
+<div id="viewer-container">
+    <div id="pages-container"></div>
+</div>
 
-    <script>
-        let pdfDoc = null;
-        let currentScale = 1.0;
-        let fitScale = 1.0;
-        let currentDocId = '';
-        
-        const pagesContainer = document.getElementById('pages-container');
-        const fileSelect = document.getElementById('file-select');
-        const statusEl = document.getElementById('status');
-        const pageCountInfo = document.getElementById('page-count-info');
-        const viewerContainer = document.getElementById('viewer-container');
+<!-- Permanent zoom controls at bottom -->
+<div id="zoom-bar">
+    <button class="zoom-btn" id="btn-zoom-out">−</button>
+    <span id="zoom-label">100%</span>
+    <button class="zoom-btn" id="btn-zoom-reset">Fit</button>
+    <button class="zoom-btn" id="btn-zoom-in">+</button>
+</div>
 
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+<div id="status">Loading…</div>
 
-        function setStatus(text) {
-            statusEl.textContent = text;
-        }
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-        async function fetchFileList() {
-            try {
-                const res = await fetch('/list');
-                const files = await res.json();
-                const pdfs = files.filter(f => f.type === 'pdf');
-                
-                fileSelect.innerHTML = '';
-                if (pdfs.length === 0) {
-                    fileSelect.innerHTML = '<option value="">No PDF files found</option>';
-                    setStatus('No PDFs available');
-                    return;
-                }
+    const container   = document.getElementById('viewer-container');
+    const pagesDiv    = document.getElementById('pages-container');
+    const fileSelect  = document.getElementById('file-select');
+    const pageCount   = document.getElementById('page-count');
+    const zoomLabel   = document.getElementById('zoom-label');
+    const statusEl    = document.getElementById('status');
 
-                pdfs.forEach(f => {
-                    const opt = document.createElement('option');
-                    opt.value = f.id;
-                    opt.textContent = f.name;
-                    fileSelect.appendChild(opt);
-                });
+    let pdfDoc    = null;
+    let fitScale  = 1.0;
+    let zoomLevel = 1.0;   // multiplier on top of fitScale
 
-                // Auto-load first file
-                fileSelect.value = pdfs[0].id;
-                loadPDF(pdfs[0].id);
-            } catch (e) {
-                console.error(e);
-                setStatus('Error loading file list');
+    const RENDER_DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+    function setStatus(t) { statusEl.textContent = t; }
+
+    function effectiveScale() { return fitScale * zoomLevel; }
+
+    function updateZoomLabel() {
+        zoomLabel.textContent = Math.round(zoomLevel * 100) + '%';
+    }
+
+    // ── File list ────────────────────────────────────────────────────────────
+    async function fetchFileList() {
+        try {
+            const res   = await fetch('/list');
+            const files = await res.json();
+            const pdfs  = files.filter(f => f.type === 'pdf');
+            fileSelect.innerHTML = '';
+            if (!pdfs.length) {
+                fileSelect.innerHTML = '<option value="">No PDFs found</option>';
+                setStatus('No PDFs'); return;
             }
-        }
+            pdfs.forEach(f => {
+                const o = document.createElement('option');
+                o.value = f.id; o.textContent = f.name;
+                fileSelect.appendChild(o);
+            });
+            fileSelect.value = pdfs[0].id;
+            loadPDF(pdfs[0].id);
+        } catch(e) { setStatus('Error loading list'); }
+    }
 
-        function loadPDF(docId) {
-            if (!docId) return;
-            currentDocId = docId;
-            setStatus('Loading PDF...');
-            
-            const fileUrl = `/file?id=${encodeURIComponent(docId)}`;
-            
-            pdfjsLib.getDocument(fileUrl).promise.then(pdfDoc_ => {
-                pdfDoc = pdfDoc_;
-                setStatus('PDF Loaded');
-                pageCountInfo.textContent = `Pages: ${pdfDoc.numPages}`;
-                
-                // Get first page to calculate initial scale to fit container width
-                pdfDoc.getPage(1).then(page => {
-                    const viewport = page.getViewport({ scale: 1.0 });
-                    const containerWidth = viewerContainer.clientWidth - 32;
-                    fitScale = Math.min(containerWidth / viewport.width, 1.25);
-                    currentScale = fitScale;
-                    renderAllPages();
-                });
-            }).catch(err => {
-                console.error(err);
-                setStatus('Error loading PDF: ' + err.message);
+    // ── Load PDF ─────────────────────────────────────────────────────────────
+    async function loadPDF(docId) {
+        if (!docId) return;
+        setStatus('Loading…');
+        pagesDiv.innerHTML = '';
+        try {
+            pdfDoc = await pdfjsLib.getDocument(`/file?id=${encodeURIComponent(docId)}`).promise;
+            pageCount.textContent = `Pages: ${pdfDoc.numPages}`;
+
+            // Calculate fit-width scale from first page
+            const firstPage = await pdfDoc.getPage(1);
+            const vp1 = firstPage.getViewport({ scale: 1 });
+            const avail = container.clientWidth - 32;
+            fitScale  = Math.max(0.3, avail / vp1.width);
+            zoomLevel = 1.0;
+            updateZoomLabel();
+
+            await renderAllPages();
+        } catch(e) { setStatus('Error: ' + e.message); }
+    }
+
+    // ── Render all pages ─────────────────────────────────────────────────────
+    async function renderAllPages() {
+        pagesDiv.innerHTML = '';
+        setStatus('Rendering…');
+        const scale = effectiveScale();
+
+        for (let n = 1; n <= pdfDoc.numPages; n++) {
+            const page     = await pdfDoc.getPage(n);
+            const viewport = page.getViewport({ scale: scale * RENDER_DPR });
+
+            const wrapper  = document.createElement('div');
+            wrapper.className = 'page-wrapper';
+            wrapper.style.width  = (viewport.width  / RENDER_DPR) + 'px';
+            wrapper.style.height = (viewport.height / RENDER_DPR) + 'px';
+
+            const canvas  = document.createElement('canvas');
+            canvas.width  = viewport.width;
+            canvas.height = viewport.height;
+            canvas.style.width  = (viewport.width  / RENDER_DPR) + 'px';
+            canvas.style.height = (viewport.height / RENDER_DPR) + 'px';
+
+            wrapper.appendChild(canvas);
+            pagesDiv.appendChild(wrapper);
+
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        }
+        setStatus('Ready');
+    }
+
+    // ── Zoom helpers ─────────────────────────────────────────────────────────
+    function changeZoom(newLevel) {
+        const oldScrollRatio = container.scrollTop / (container.scrollHeight || 1);
+        zoomLevel = Math.min(Math.max(newLevel, 0.25), 4.0);
+        updateZoomLabel();
+        renderAllPages().then(() => {
+            container.scrollTop = oldScrollRatio * container.scrollHeight;
+        });
+    }
+
+    document.getElementById('btn-zoom-in').addEventListener('click',  () => changeZoom(zoomLevel + 0.25));
+    document.getElementById('btn-zoom-out').addEventListener('click', () => changeZoom(zoomLevel - 0.25));
+    document.getElementById('btn-zoom-reset').addEventListener('click',() => changeZoom(1.0));
+    fileSelect.addEventListener('change', e => loadPDF(e.target.value));
+
+    // ── Pinch-to-zoom (touch) ────────────────────────────────────────────────
+    let pinchStart   = 0;
+    let pinchBase    = 1.0;
+    let isPinching   = false;
+    let pinchMidX    = 0;
+    let pinchMidY    = 0;
+    let pinchEndedAt = 0;
+
+    container.addEventListener('touchstart', e => {
+        if (e.touches.length === 2) {
+            isPinching  = true;
+            pinchStart  = Math.hypot(
+                e.touches[1].clientX - e.touches[0].clientX,
+                e.touches[1].clientY - e.touches[0].clientY
+            );
+            pinchBase = zoomLevel;
+            const r = container.getBoundingClientRect();
+            pinchMidX = ((e.touches[0].clientX + e.touches[1].clientX) / 2) - r.left + container.scrollLeft;
+            pinchMidY = ((e.touches[0].clientY + e.touches[1].clientY) / 2) - r.top  + container.scrollTop;
+            e.preventDefault();
+        }
+    }, { passive: false });
+
+    container.addEventListener('touchmove', e => {
+        if (!isPinching || e.touches.length < 2) return;
+        e.preventDefault();
+        const dist = Math.hypot(
+            e.touches[1].clientX - e.touches[0].clientX,
+            e.touches[1].clientY - e.touches[0].clientY
+        );
+        const raw = pinchBase * (dist / pinchStart);
+        zoomLevel  = Math.min(Math.max(raw, 0.25), 4.0);
+        updateZoomLabel();
+
+        // Resize wrappers in-place (no re-render) for live feel
+        const scale = effectiveScale();
+        const wraps = pagesDiv.querySelectorAll('.page-wrapper');
+        wraps.forEach(w => {
+            const c = w.querySelector('canvas');
+            const cssW = c.width  / RENDER_DPR;
+            const cssH = c.height / RENDER_DPR;
+            const scaleRatio = (scale * RENDER_DPR) / (c.width / (parseFloat(w.style.width)));
+            // simpler: just scale width/height proportionally
+            const ratio = zoomLevel / pinchBase;
+            w.style.width  = (parseFloat(w.style.width)  * ratio / (zoomLevel / pinchBase > 1 ? ratio : ratio)) + 'px';
+        });
+        // Actually just apply direct layout scale
+        applyLiveZoom(scale);
+    }, { passive: false });
+
+    // Live zoom during pinch (no re-render, just resize divs)
+    function applyLiveZoom(targetScale) {
+        const wraps = pagesDiv.querySelectorAll('.page-wrapper');
+        wraps.forEach(w => {
+            const canvas = w.querySelector('canvas');
+            const displayW = canvas.width  / RENDER_DPR * (zoomLevel / pinchBase);
+            const displayH = canvas.height / RENDER_DPR * (zoomLevel / pinchBase);
+            w.style.width  = displayW + 'px';
+            w.style.height = displayH + 'px';
+        });
+    }
+
+    container.addEventListener('touchend', e => {
+        if (isPinching && e.touches.length < 2) {
+            isPinching   = false;
+            pinchEndedAt = Date.now();
+            // Commit: re-render at new zoom level for crisp output
+            const savedScroll = container.scrollTop;
+            const oldH = container.scrollHeight;
+            renderAllPages().then(() => {
+                container.scrollTop = savedScroll * (container.scrollHeight / (oldH || 1));
             });
         }
+    }, { passive: true });
 
-        function renderAllPages() {
-            if (!pdfDoc) return;
-            pagesContainer.innerHTML = '';
-            setStatus('Rendering pages...');
+    // ── Ctrl-wheel zoom (desktop/emulator) ───────────────────────────────────
+    container.addEventListener('wheel', e => {
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.15 : -0.15;
+        changeZoom(zoomLevel + delta);
+    }, { passive: false });
 
-            let renderPromise = Promise.resolve();
-
-            for (let num = 1; num <= pdfDoc.numPages; num++) {
-                const pageWrapper = document.createElement('div');
-                pageWrapper.className = 'page-wrapper';
-                
-                const canvas = document.createElement('canvas');
-                pageWrapper.appendChild(canvas);
-                pagesContainer.appendChild(pageWrapper);
-
-                renderPromise = renderPromise.then(() => {
-                    return pdfDoc.getPage(num).then(page => {
-                        const ctx = canvas.getContext('2d');
-                        // Render at crisp 1.5x resolution
-                        const renderScale = 1.5;
-                        const viewport = page.getViewport({ scale: renderScale });
-                        canvas.height = viewport.height;
-                        canvas.width = viewport.width;
-
-                        const baseViewport = page.getViewport({ scale: 1.0 });
-                        pageWrapper.dataset.width = baseViewport.width;
-                        pageWrapper.dataset.height = baseViewport.height;
-                        
-                        // Scale visually in layout
-                        pageWrapper.style.width = (baseViewport.width * currentScale) + 'px';
-                        pageWrapper.style.height = (baseViewport.height * currentScale) + 'px';
-
-                        const renderContext = {
-                            canvasContext: ctx,
-                            viewport: viewport
-                        };
-                        return page.render(renderContext).promise;
-                    });
-                });
-            }
-
-            renderPromise.then(() => {
-                setStatus('Ready');
-            }).catch(err => {
-                console.error(err);
-                setStatus('Render error');
-            });
+    // ── Double-tap zoom ──────────────────────────────────────────────────────
+    let lastTap = 0;
+    container.addEventListener('touchend', e => {
+        if (isPinching || Date.now() - pinchEndedAt < 600) return;
+        const now = Date.now();
+        if (now - lastTap < 300) {
+            changeZoom(zoomLevel > 1.05 ? 1.0 : 2.0);
         }
+        lastTap = now;
+    }, { passive: true });
 
-        function applyZoom() {
-            const wrappers = document.querySelectorAll('.page-wrapper');
-            wrappers.forEach(wrapper => {
-                const baseWidth = parseFloat(wrapper.dataset.width);
-                const baseHeight = parseFloat(wrapper.dataset.height);
-                wrapper.style.width = (baseWidth * currentScale) + 'px';
-                wrapper.style.height = (baseHeight * currentScale) + 'px';
-            });
-        }
-
-        fileSelect.addEventListener('change', (e) => {
-            loadPDF(e.target.value);
-        });
-
-        // Touch Zoom and Pan Gestures
-        let initialTouchDist = 0;
-        let initialScale = 1.0;
-        let isPinching = false;
-        let pinchCenterX = 0;
-        let pinchCenterY = 0;
-        let lastPinchEndTime = 0;
-
-        viewerContainer.addEventListener('touchstart', (e) => {
-            if (e.touches.length === 2) {
-                isPinching = true;
-                initialTouchDist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                initialScale = currentScale;
-
-                const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-                const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-
-                const rect = viewerContainer.getBoundingClientRect();
-                pinchCenterX = midX - rect.left;
-                pinchCenterY = midY - rect.top;
-                
-                e.preventDefault();
-            }
-        }, { passive: false });
-
-        viewerContainer.addEventListener('touchmove', (e) => {
-            if (isPinching && e.touches.length === 2) {
-                e.preventDefault();
-
-                const dist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-
-                const factor = dist / initialTouchDist;
-                let newScale = initialScale * factor;
-
-                // Clamp scale between 0.3x and 4.0x
-                newScale = Math.min(Math.max(newScale, 0.3), 4.0);
-
-                if (Math.abs(newScale - currentScale) > 0.005) {
-                    const oldScale = currentScale;
-                    currentScale = newScale;
-
-                    const scrollLeft = viewerContainer.scrollLeft;
-                    const scrollTop = viewerContainer.scrollTop;
-
-                    applyZoom();
-
-                    viewerContainer.scrollLeft = (scrollLeft + pinchCenterX) * (newScale / oldScale) - pinchCenterX;
-                    viewerContainer.scrollTop = (scrollTop + pinchCenterY) * (newScale / oldScale) - pinchCenterY;
-                }
-            }
-        }, { passive: false });
-
-        viewerContainer.addEventListener('touchend', (e) => {
-            if (isPinching && e.touches.length < 2) {
-                isPinching = false;
-                lastPinchEndTime = new Date().getTime();
-            }
-        });
-
-        // Double tap zoom logic
-        let lastTapTime = 0;
-        viewerContainer.addEventListener('touchend', (e) => {
-            const currentTime = new Date().getTime();
-            if (isPinching || (currentTime - lastPinchEndTime < 500)) {
-                return;
-            }
-            const tapLength = currentTime - lastTapTime;
-            if (tapLength < 300 && tapLength > 0) {
-                const touch = e.changedTouches[0];
-                const rect = viewerContainer.getBoundingClientRect();
-                const tapX = touch.clientX - rect.left;
-                const tapY = touch.clientY - rect.top;
-
-                let newScale = currentScale > (fitScale + 0.05) ? fitScale : fitScale * 2.5;
-                const oldScale = currentScale;
-                currentScale = newScale;
-
-                const scrollLeft = viewerContainer.scrollLeft;
-                const scrollTop = viewerContainer.scrollTop;
-
-                applyZoom();
-
-                viewerContainer.scrollLeft = (scrollLeft + tapX) * (newScale / oldScale) - tapX;
-                viewerContainer.scrollTop = (scrollTop + tapY) * (newScale / oldScale) - tapY;
-
-                e.preventDefault();
-            }
-            lastTapTime = currentTime;
-        });
-
-        // Mouse Wheel Ctrl+Zoom
-        viewerContainer.addEventListener('wheel', (e) => {
-            if (e.ctrlKey) {
-                e.preventDefault();
-                const delta = -e.deltaY;
-                const factor = delta > 0 ? 1.1 : 0.9;
-                let newScale = currentScale * factor;
-                newScale = Math.min(Math.max(newScale, 0.3), 4.0);
-
-                if (Math.abs(newScale - currentScale) > 0.005) {
-                    const oldScale = currentScale;
-                    currentScale = newScale;
-
-                    const rect = viewerContainer.getBoundingClientRect();
-                    const mouseX = e.clientX - rect.left;
-                    const mouseY = e.clientY - rect.top;
-
-                    const scrollLeft = viewerContainer.scrollLeft;
-                    const scrollTop = viewerContainer.scrollTop;
-
-                    applyZoom();
-
-                    viewerContainer.scrollLeft = (scrollLeft + mouseX) * (newScale / oldScale) - mouseX;
-                    viewerContainer.scrollTop = (scrollTop + mouseY) * (newScale / oldScale) - mouseY;
-                }
-            }
-        }, { passive: false });
-
-        // Initialize
-        fetchFileList();
-    </script>
+    // ── Init ─────────────────────────────────────────────────────────────────
+    fetchFileList();
+</script>
 </body>
 </html>

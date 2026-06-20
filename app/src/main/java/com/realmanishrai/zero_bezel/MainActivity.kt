@@ -36,6 +36,9 @@ import com.realmanishrai.zero_bezel.ui.theme.GlassyBackground
 import com.realmanishrai.zero_bezel.ui.theme.ZerobezelTheme
 import com.realmanishrai.zero_bezel.ui.theme.glassCard
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import android.graphics.Bitmap
@@ -57,6 +60,13 @@ class MainActivity : ComponentActivity() {
     private var hostLogs by mutableStateOf(listOf("Initializing..."))
     private var clientLogs by mutableStateOf(listOf("Enter Host IP above to begin."))
     private var connectionStatus by mutableStateOf("Disconnected")
+    private var muteClientAudio by mutableStateOf(false)
+
+    /** Emits JSON sync events received from the remote device over TCP. */
+    private val syncEventFlow: MutableSharedFlow<String> = MutableSharedFlow(
+        extraBufferCapacity = 128,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
 
     private var mediaServer: MediaStreamingServer? = null
     private var hostServerJob: kotlinx.coroutines.Job? = null
@@ -86,6 +96,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onLog = { log ->
                         hostLogs = (hostLogs + log).takeLast(10)
+                    },
+                    onSyncReceived = { json ->
+                        lifecycleScope.launch { syncEventFlow.emit(json) }
                     }
                 )
             }
@@ -120,6 +133,9 @@ class MainActivity : ComponentActivity() {
                 },
                 onLog = { log ->
                     clientLogs = (clientLogs + log).takeLast(10)
+                },
+                onSyncReceived = { json ->
+                    lifecycleScope.launch { syncEventFlow.emit(json) }
                 }
             )
             if (!success) {
@@ -177,16 +193,22 @@ class MainActivity : ComponentActivity() {
                         is Screen.Client -> ClientScreen(
                             connectionStatus = connectionStatus,
                             clientLogs = clientLogs,
+                            muteClientAudio = muteClientAudio,
                             onConnect = { ip -> startClientConnection(ip) },
                             onNavigateBack = {
                                 stopClientConnection()
                                 currentScreen = Screen.Entry
                             },
-                            onOpenApp = { url -> currentScreen = Screen.WebViewHost(url, Screen.Client) }
+                            onOpenApp = { url -> currentScreen = Screen.WebViewHost(url, Screen.Client) },
+                            onMuteToggle = { muteClientAudio = !muteClientAudio }
                         )
                         is Screen.WebViewHost -> WebViewHostScreen(
                             url = screen.url,
-                            onBack = { currentScreen = screen.parent }
+                            onBack = { currentScreen = screen.parent },
+                            onSyncSend = { json -> NetworkService.sendSync(json) },
+                            syncEvents = syncEventFlow as SharedFlow<String>,
+                            isClient = screen.parent is Screen.Client,
+                            muteClientAudio = muteClientAudio
                         )
                     }
                 }
@@ -517,9 +539,11 @@ private fun HostScreen(
 private fun ClientScreen(
     connectionStatus: String,
     clientLogs: List<String>,
+    muteClientAudio: Boolean = false,
     onConnect: (String) -> Unit,
     onNavigateBack: () -> Unit,
-    onOpenApp: (String) -> Unit
+    onOpenApp: (String) -> Unit,
+    onMuteToggle: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var hostIpInput by remember { mutableStateOf("") }
@@ -625,6 +649,23 @@ private fun ClientScreen(
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF0F172A)
                         )
+
+                        // Mute Client Audio toggle (prevents echo during video sync)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "🔇 Mute Client Audio",
+                                fontSize = 13.sp,
+                                color = Color(0xFF475569)
+                            )
+                            Switch(
+                                checked = muteClientAudio,
+                                onCheckedChange = { onMuteToggle() }
+                            )
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)

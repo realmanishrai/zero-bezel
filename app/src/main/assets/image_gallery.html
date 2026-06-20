@@ -7,31 +7,30 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
-        html, body { height: 100%; overflow: hidden; }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: linear-gradient(160deg, #020617 0%, #0f172a 100%);
             color: #f1f5f9;
-            display: flex;
-            flex-direction: column;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
 
-        /* ── Header ─────────────────────────────────────────────────────── */
-        header {
-            flex-shrink: 0;
-            padding: 14px 18px;
+        /* ── Fixed header ─────────────────────────────────────────────────── */
+        #top-bar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 56px;
             background: rgba(255,255,255,0.04);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
             border-bottom: 1px solid rgba(255,255,255,0.08);
             display: flex;
             align-items: center;
+            padding: 0 18px;
             gap: 12px;
+            z-index: 100;
         }
 
-        h1 {
-            font-size: 1.2rem;
+        #top-bar h1 {
+            font-size: 1.15rem;
             font-weight: 700;
             background: linear-gradient(to right, #38bdf8, #818cf8);
             -webkit-background-clip: text;
@@ -40,9 +39,11 @@
 
         #img-count { font-size: 0.78rem; color: #64748b; margin-left: auto; }
 
-        /* ── Grid ────────────────────────────────────────────────────────── */
+        /* ── Scrollable grid — positioned below header ────────────────────── */
         #grid-scroll {
-            flex: 1 1 0;
+            position: fixed;
+            top: 56px;
+            left: 0; right: 0; bottom: 0;
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
             padding: 14px;
@@ -54,11 +55,10 @@
             gap: 10px;
         }
 
-        /* touch-action:manipulation removes 300ms tap delay on Android without
-           needing preventDefault, so fetch() works normally after opening lightbox */
+        /* touch-action:manipulation removes 300ms delay; no preventDefault needed */
         .thumb {
             aspect-ratio: 1;
-            border-radius: 12px;
+            border-radius: 13px;
             overflow: hidden;
             cursor: pointer;
             background: rgba(255,255,255,0.05);
@@ -66,47 +66,43 @@
             touch-action: manipulation;
             transition: transform 0.15s, box-shadow 0.15s;
         }
-        .thumb:active { transform: scale(0.93); }
-        .thumb:hover  { box-shadow: 0 6px 20px rgba(56,189,248,0.2); border-color: rgba(56,189,248,0.35); }
+        .thumb:active { transform: scale(0.92); }
+        .thumb:hover  {
+            box-shadow: 0 6px 20px rgba(56,189,248,0.2);
+            border-color: rgba(56,189,248,0.35);
+        }
 
         .thumb img {
-            width: 100%;
-            height: 100%;
+            width: 100%; height: 100%;
             object-fit: cover;
             display: block;
         }
 
-        /* ── LIGHTBOX ────────────────────────────────────────────────────── */
+        /* ── LIGHTBOX (fixed, full-screen) ────────────────────────────────── */
         #lightbox {
             position: fixed;
             inset: 0;
             z-index: 9999;
             display: flex;
             flex-direction: column;
-            /* start hidden */
-            visibility: hidden;
-            pointer-events: none;
-        }
-
-        #lb-bg {
-            position: absolute;
-            inset: 0;
             background: rgba(0,0,0,0);
+            visibility: hidden;
             transition: background 0.22s ease;
         }
 
-        #lightbox.open { visibility: visible; pointer-events: auto; }
-        #lightbox.open #lb-bg { background: rgba(0,0,0,0.95); }
+        #lightbox.open {
+            visibility: visible;
+            background: rgba(0,0,0,0.96);
+        }
 
-        /* top bar */
+        /* lightbox top bar */
         #lb-bar {
             flex-shrink: 0;
-            position: relative;
-            z-index: 2;
+            height: 54px;
             display: flex;
             align-items: center;
+            padding: 0 14px;
             gap: 8px;
-            padding: 10px 14px;
             background: rgba(0,0,0,0.55);
             backdrop-filter: blur(12px);
             -webkit-backdrop-filter: blur(12px);
@@ -117,11 +113,11 @@
             flex: 1;
             font-size: 0.88rem;
             color: #cbd5e1;
-            white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
         }
-        #lb-idx { font-size: 0.78rem; color: #475569; white-space: nowrap; }
+        #lb-counter { font-size: 0.78rem; color: #475569; white-space: nowrap; }
 
         .lbtn {
             background: rgba(255,255,255,0.08);
@@ -135,19 +131,18 @@
             transition: background 0.15s;
             flex-shrink: 0;
         }
-        .lbtn:hover { background: rgba(255,255,255,0.18); }
-        #lb-close { background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.28); }
-        #lb-close:hover { background: rgba(239,68,68,0.35); }
+        .lbtn:hover { background: rgba(255,255,255,0.2); }
+        #lb-close { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.3); }
+        #lb-close:hover { background: rgba(239,68,68,0.38); }
 
-        /* stage: all gestures handled here */
+        /* stage: fills remaining space, gestures handled here */
         #lb-stage {
             flex: 1 1 0;
             position: relative;
-            z-index: 2;
-            overflow: hidden;
             display: flex;
             align-items: center;
             justify-content: center;
+            overflow: hidden;
             touch-action: none;
         }
 
@@ -160,26 +155,24 @@
             user-select: none;
             -webkit-user-drag: none;
             will-change: transform;
-            transform-origin: center center;
         }
 
-        /* arrow buttons — visible only on non-touch */
         .lb-arrow {
             position: absolute;
             top: 50%;
             transform: translateY(-50%);
-            z-index: 3;
-            background: rgba(0,0,0,0.45);
+            background: rgba(0,0,0,0.42);
             border: 1px solid rgba(255,255,255,0.1);
-            color: rgba(255,255,255,0.75);
+            color: rgba(255,255,255,0.7);
             width: 44px; height: 44px;
             border-radius: 50%;
-            font-size: 1.3rem;
+            font-size: 1.4rem;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
             touch-action: manipulation;
+            z-index: 3;
             transition: background 0.15s;
         }
         .lb-arrow:hover { background: rgba(56,189,248,0.3); color: #fff; }
@@ -189,17 +182,15 @@
         /* bottom dots */
         #lb-dots {
             flex-shrink: 0;
-            position: relative;
-            z-index: 2;
+            min-height: 38px;
             display: flex;
-            justify-content: center;
             align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
             gap: 7px;
-            padding: 10px;
+            padding: 8px 16px;
             background: rgba(0,0,0,0.45);
             border-top: 1px solid rgba(255,255,255,0.05);
-            flex-wrap: wrap;
-            min-height: 36px;
         }
 
         .dot {
@@ -210,29 +201,29 @@
             touch-action: manipulation;
             transition: background 0.2s, transform 0.2s;
         }
-        .dot.active { background: #38bdf8; transform: scale(1.4); }
+        .dot.active { background: #38bdf8; transform: scale(1.45); }
 
         #status {
             position: fixed;
-            bottom: 40px; right: 14px;
-            background: rgba(15,23,42,0.88);
+            bottom: 14px; right: 14px;
+            background: rgba(15,23,42,0.9);
             backdrop-filter: blur(8px);
             border: 1px solid rgba(255,255,255,0.08);
             padding: 4px 11px;
             border-radius: 20px;
             font-size: 0.7rem;
             color: #38bdf8;
-            z-index: 500;
+            z-index: 300;
             pointer-events: none;
         }
     </style>
 </head>
 <body>
 
-<header>
+<div id="top-bar">
     <h1>🖼️ Gallery</h1>
     <span id="img-count"></span>
-</header>
+</div>
 
 <div id="grid-scroll">
     <div id="grid"></div>
@@ -240,78 +231,79 @@
 
 <!-- LIGHTBOX -->
 <div id="lightbox">
-    <div id="lb-bg"></div>
     <div id="lb-bar">
-        <span id="lb-title"></span>
-        <span id="lb-idx"></span>
-        <button class="lbtn" id="lb-close">✕</button>
+        <span id="lb-title">Image</span>
+        <span id="lb-counter"></span>
+        <button class="lbtn" id="lb-close">✕ Close</button>
     </div>
+
     <div id="lb-stage">
         <img id="lb-img" src="" alt="">
         <button class="lb-arrow" id="lb-prev">&#8249;</button>
         <button class="lb-arrow" id="lb-next">&#8250;</button>
     </div>
+
     <div id="lb-dots"></div>
 </div>
 
 <div id="status">Loading…</div>
 
 <script>
-// ── State ─────────────────────────────────────────────────────────────────────
+/* ── State ────────────────────────────────────────────────────────────────── */
 let images = [];
-let idx    = 0;
+let curIdx = 0;
 
-// ── DOM ───────────────────────────────────────────────────────────────────────
-const grid     = document.getElementById('grid');
-const imgCount = document.getElementById('img-count');
-const statusEl = document.getElementById('status');
-const lightbox = document.getElementById('lightbox');
-const lbImg    = document.getElementById('lb-img');
-const lbTitle  = document.getElementById('lb-title');
-const lbIdx    = document.getElementById('lb-idx');
-const lbDots   = document.getElementById('lb-dots');
-const lbClose  = document.getElementById('lb-close');
-const lbPrev   = document.getElementById('lb-prev');
-const lbNext   = document.getElementById('lb-next');
-const stage    = document.getElementById('lb-stage');
+/* ── DOM refs ─────────────────────────────────────────────────────────────── */
+const grid    = document.getElementById('grid');
+const imgCnt  = document.getElementById('img-count');
+const statusEl= document.getElementById('status');
+const lightbox= document.getElementById('lightbox');
+const lbImg   = document.getElementById('lb-img');
+const lbTitle = document.getElementById('lb-title');
+const lbCtr   = document.getElementById('lb-counter');
+const lbDots  = document.getElementById('lb-dots');
+const lbClose = document.getElementById('lb-close');
+const lbPrev  = document.getElementById('lb-prev');
+const lbNext  = document.getElementById('lb-next');
+const stage   = document.getElementById('lb-stage');
 
-function status(t) { statusEl.textContent = t; }
+function st(t) { statusEl.textContent = t; }
 
-// ── Fetch ─────────────────────────────────────────────────────────────────────
-async function fetchGallery() {
+/* ── Fetch ────────────────────────────────────────────────────────────────── */
+async function loadGallery() {
     try {
         const res = await fetch('/list');
         const all = await res.json();
         images    = all.filter(f => f.type === 'image');
         buildGrid();
-        status(images.length ? 'Ready' : 'No images');
+        st(images.length ? 'Ready' : 'No images found');
     } catch(e) {
-        status('Error: ' + e.message);
+        st('Error: ' + e.message);
     }
 }
 
-// ── Build thumbnail grid ───────────────────────────────────────────────────────
+/* ── Grid ─────────────────────────────────────────────────────────────────── */
 function buildGrid() {
     grid.innerHTML = '';
     lbDots.innerHTML = '';
-    imgCount.textContent = images.length + ' photo' + (images.length !== 1 ? 's' : '');
+    imgCnt.textContent = images.length + (images.length === 1 ? ' photo' : ' photos');
 
     images.forEach((img, i) => {
-        // Thumbnail
+        /* Thumbnail */
         const card = document.createElement('div');
         card.className = 'thumb';
 
-        const el  = document.createElement('img');
-        el.src    = '/file?id=' + encodeURIComponent(img.id);
-        el.alt    = img.name;
+        const el = document.createElement('img');
+        el.src     = '/file?id=' + encodeURIComponent(img.id);
+        el.alt     = img.name;
         el.loading = 'lazy';
         card.appendChild(el);
 
-        // Single click/tap to open — touch-action:manipulation handles the delay
-        card.addEventListener('click', () => openAt(i));
+        /* click opens lightbox — touch-action:manipulation removes 300ms delay */
+        card.addEventListener('click', () => openLightbox(i));
         grid.appendChild(card);
 
-        // Dot
+        /* Dot */
         const dot = document.createElement('div');
         dot.className = 'dot';
         dot.addEventListener('click', () => goTo(i));
@@ -319,115 +311,120 @@ function buildGrid() {
     });
 }
 
-// ── Lightbox open/close ───────────────────────────────────────────────────────
-function openAt(i) {
-    idx = i;
-    resetTransform();
+/* ── Lightbox open/close ──────────────────────────────────────────────────── */
+function openLightbox(i) {
+    curIdx = i;
+    resetT();
     lightbox.classList.add('open');
-    showImage(i);
+    showImg(i);
 }
 
-function close() {
+function closeLightbox() {
     lightbox.classList.remove('open');
-    resetTransform();
+    resetT();
 }
 
-function showImage(i) {
-    const img      = images[i];
-    lbImg.src      = '/file?id=' + encodeURIComponent(img.id);
-    lbTitle.textContent = img.name;
-    lbIdx.textContent   = (i + 1) + ' / ' + images.length;
-    lbPrev.style.opacity = i > 0                  ? '1' : '0.2';
-    lbNext.style.opacity = i < images.length - 1  ? '1' : '0.2';
-    lbDots.querySelectorAll('.dot').forEach((d, j) => d.classList.toggle('active', j === i));
+function showImg(i) {
+    const d = images[i];
+    lbImg.src   = '/file?id=' + encodeURIComponent(d.id);
+    lbTitle.textContent = d.name;
+    lbCtr.textContent   = (i + 1) + ' / ' + images.length;
+    lbPrev.style.opacity = i > 0               ? '1' : '0.25';
+    lbNext.style.opacity = i < images.length-1 ? '1' : '0.25';
+    lbDots.querySelectorAll('.dot').forEach((dot, j) => dot.classList.toggle('active', j === i));
 }
 
-lbClose.addEventListener('click', close);
-lbPrev.addEventListener('click', () => goTo(idx - 1));
-lbNext.addEventListener('click', () => goTo(idx + 1));
+lbClose.addEventListener('click', closeLightbox);
+lbPrev.addEventListener('click', () => goTo(curIdx - 1, 'right'));
+lbNext.addEventListener('click', () => goTo(curIdx + 1, 'left'));
 
 document.addEventListener('keydown', e => {
     if (!lightbox.classList.contains('open')) return;
-    if (e.key === 'ArrowLeft')  goTo(idx - 1);
-    if (e.key === 'ArrowRight') goTo(idx + 1);
-    if (e.key === 'Escape')     close();
+    if (e.key === 'ArrowLeft')  goTo(curIdx - 1, 'right');
+    if (e.key === 'ArrowRight') goTo(curIdx + 1, 'left');
+    if (e.key === 'Escape')     closeLightbox();
 });
 
+/* ── Animated image transition ────────────────────────────────────────────── */
 function goTo(i, dir) {
     if (i < 0 || i >= images.length) return;
-    const direction = dir ?? (i > idx ? 'left' : 'right');
-    idx = i;
-    // Slide out current
-    const outX = direction === 'left' ? '-100%' : '100%';
-    lbImg.style.transition = 'transform 0.22s ease-out, opacity 0.22s';
-    lbImg.style.transform  = 'translate(' + outX + ', 0) scale(1)';
+    dir = dir || (i > curIdx ? 'left' : 'right');
+    curIdx = i;
+
+    const outX = dir === 'left' ? '-110%' : '110%';
+    lbImg.style.transition = 'transform 0.2s ease-out, opacity 0.2s';
+    lbImg.style.transform  = 'translate(' + outX + ',0) scale(1)';
     lbImg.style.opacity    = '0';
+
     setTimeout(() => {
-        resetTransform(false);
-        // Slide in from opposite side
-        const inX = direction === 'left' ? '100%' : '-100%';
+        const inX = dir === 'left' ? '110%' : '-110%';
         lbImg.style.transition = 'none';
-        lbImg.style.transform  = 'translate(' + inX + ', 0) scale(1)';
+        lbImg.style.transform  = 'translate(' + inX + ',0) scale(1)';
         lbImg.style.opacity    = '0';
-        showImage(i);
-        // Force reflow
-        lbImg.getBoundingClientRect();
-        lbImg.style.transition = 'transform 0.22s ease-out, opacity 0.22s';
-        lbImg.style.transform  = 'translate(0, 0) scale(1)';
+        showImg(i);
+        lbImg.getBoundingClientRect(); // force reflow
+        lbImg.style.transition = 'transform 0.2s ease-out, opacity 0.2s';
+        lbImg.style.transform  = 'translate(0,0) scale(1)';
         lbImg.style.opacity    = '1';
-    }, 220);
+        tx = 0; ty = 0; sc = 1;
+    }, 210);
 }
 
-// ── Transform state ───────────────────────────────────────────────────────────
+/* ── Transform state ──────────────────────────────────────────────────────── */
 let tx = 0, ty = 0, sc = 1;
 
-function applyT(animated) {
-    lbImg.style.transition = animated ? 'transform 0.22s ease-out' : 'none';
+function applyT(anim) {
+    lbImg.style.transition = anim ? 'transform 0.2s ease-out' : 'none';
     lbImg.style.transform  = 'translate(' + tx + 'px,' + ty + 'px) scale(' + sc + ')';
 }
 
-function resetTransform(apply) {
+function resetT() {
     tx = 0; ty = 0; sc = 1;
-    lbImg.style.opacity = '1';
-    if (apply !== false) applyT(true);
+    lbImg.style.transition = 'none';
+    lbImg.style.transform  = 'translate(0,0) scale(1)';
+    lbImg.style.opacity    = '1';
 }
 
 function clampPan() {
     if (sc <= 1) { tx = 0; ty = 0; return; }
-    const w = lbImg.clientWidth * sc, h = lbImg.clientHeight * sc;
-    const vw = window.innerWidth,     vh = window.innerHeight;
-    const mx = Math.max(0, (w - vw) / 2), my = Math.max(0, (h - vh) / 2);
+    const w  = lbImg.clientWidth  * sc;
+    const h  = lbImg.clientHeight * sc;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const mx = Math.max(0, (w - vw) / 2);
+    const my = Math.max(0, (h - vh) / 2);
     tx = Math.min(Math.max(tx, -mx), mx);
     ty = Math.min(Math.max(ty, -my), my);
 }
 
-// ── Touch gesture engine ──────────────────────────────────────────────────────
-let pts       = {};         // active touches  {id:{x,y}}
-let gesture   = null;       // 'swipe'|'dismiss'|'pan'|'pinch'
+/* ── Touch gesture engine ─────────────────────────────────────────────────── */
+let pts       = {};
+let gesture   = null;
 let gStartTx  = 0, gStartTy = 0;
 let gStartX   = 0, gStartY  = 0;
-let pDist0    = 0, pSc0 = 1;
-let pTx0      = 0, pTy0 = 0;
-let pMx0      = 0, pMy0 = 0;
+let pDist0    = 0, pSc0     = 1;
+let pTx0      = 0, pTy0     = 0;
+let pMx0      = 0, pMy0     = 0;
 
 function ptCount() { return Object.keys(pts).length; }
 
 stage.addEventListener('touchstart', e => {
     e.preventDefault();
-    Array.from(e.changedTouches).forEach(t => pts[t.identifier] = { x: t.clientX, y: t.clientY });
+    Array.from(e.changedTouches).forEach(t => {
+        pts[t.identifier] = { x: t.clientX, y: t.clientY };
+    });
 
     const ids = Object.keys(pts);
     if (ids.length === 1) {
-        gesture = null;
-        gStartTx = tx; gStartTy = ty;
+        gesture  = null;
+        gStartTx = tx;   gStartTy = ty;
         gStartX  = pts[ids[0]].x;
         gStartY  = pts[ids[0]].y;
     } else if (ids.length === 2) {
-        gesture = 'pinch';
+        gesture  = 'pinch';
         const [a, b] = ids.map(id => pts[id]);
         pDist0 = Math.hypot(b.x - a.x, b.y - a.y);
-        pSc0   = sc;
-        pTx0   = tx; pTy0 = ty;
+        pSc0   = sc; pTx0 = tx; pTy0 = ty;
         pMx0   = (a.x + b.x) / 2;
         pMy0   = (a.y + b.y) / 2;
         lbImg.style.transition = 'none';
@@ -448,9 +445,8 @@ stage.addEventListener('touchmove', e => {
         const mx  = (a.x + b.x) / 2;
         const my  = (a.y + b.y) / 2;
         sc = Math.min(Math.max(pSc0 * (d / pDist0), 0.5), 6);
-        // Pan with pinch mid-point
-        tx = pTx0 + (mx - pMx0) + (mx - pMx0) * (sc / pSc0 - 1);
-        ty = pTy0 + (my - pMy0) + (my - pMy0) * (sc / pSc0 - 1);
+        tx = pTx0 + (mx - pMx0);
+        ty = pTy0 + (my - pMy0);
         clampPan();
         applyT(false);
         return;
@@ -461,17 +457,16 @@ stage.addEventListener('touchmove', e => {
         const dx = p.x - gStartX;
         const dy = p.y - gStartY;
 
-        if (!gesture) {
-            if (Math.abs(dx) > 9 || Math.abs(dy) > 9) {
-                if (sc > 1.04)                            gesture = 'pan';
-                else if (Math.abs(dx) >= Math.abs(dy))   gesture = 'swipe';
-                else                                      gesture = 'dismiss';
-                lbImg.style.transition = 'none';
-            }
+        if (!gesture && (Math.abs(dx) > 9 || Math.abs(dy) > 9)) {
+            if (sc > 1.04)                          gesture = 'pan';
+            else if (Math.abs(dx) >= Math.abs(dy))  gesture = 'swipe';
+            else                                    gesture = 'dismiss';
+            lbImg.style.transition = 'none';
         }
 
         if (gesture === 'pan') {
-            tx = gStartTx + dx; ty = gStartTy + dy;
+            tx = gStartTx + dx;
+            ty = gStartTy + dy;
             clampPan();
             applyT(false);
         } else if (gesture === 'swipe') {
@@ -479,39 +474,39 @@ stage.addEventListener('touchmove', e => {
         } else if (gesture === 'dismiss') {
             lbImg.style.transform = 'translate(0,' + dy + 'px) scale(1)';
             const fade = Math.max(0, 1 - Math.abs(dy) / (window.innerHeight * 0.5));
-            document.getElementById('lb-bg').style.background = 'rgba(0,0,0,' + (0.95 * fade) + ')';
+            lightbox.style.background = 'rgba(0,0,0,' + (0.96 * fade) + ')';
         }
     }
 }, { passive: false });
 
 stage.addEventListener('touchend', e => {
     Array.from(e.changedTouches).forEach(t => delete pts[t.identifier]);
+    const remaining = Object.keys(pts).length;
 
     if (gesture === 'pinch') {
-        if (ptCount() < 2) {
+        if (remaining < 2) {
             gesture = null;
             if (sc < 1.05) { sc = 1; tx = 0; ty = 0; applyT(true); }
         }
         return;
     }
 
-    const ids = Object.keys(pts);
-    if (ids.length > 0) return;   // still touching
+    if (remaining > 0) return;
 
     const p = e.changedTouches[0];
 
     if (gesture === 'swipe') {
         const dx = p.clientX - gStartX;
-        if      (dx < -65 && idx < images.length - 1) goTo(idx + 1, 'left');
-        else if (dx >  65 && idx > 0)                 goTo(idx - 1, 'right');
+        if      (dx < -65 && curIdx < images.length - 1) goTo(curIdx + 1, 'left');
+        else if (dx >  65 && curIdx > 0)                 goTo(curIdx - 1, 'right');
         else { tx = 0; ty = 0; applyT(true); }
         gesture = null; return;
     }
 
     if (gesture === 'dismiss') {
-        document.getElementById('lb-bg').style.background = '';
+        lightbox.style.background = '';
         const dy = p.clientY - gStartY;
-        if (Math.abs(dy) > window.innerHeight * 0.2) close();
+        if (Math.abs(dy) > window.innerHeight * 0.2) closeLightbox();
         else { tx = 0; ty = 0; applyT(true); }
         gesture = null; return;
     }
@@ -519,7 +514,7 @@ stage.addEventListener('touchend', e => {
     gesture = null;
 }, { passive: true });
 
-// ── Double-tap zoom ───────────────────────────────────────────────────────────
+/* ── Double-tap zoom ──────────────────────────────────────────────────────── */
 let lastTapMs = 0;
 stage.addEventListener('touchend', e => {
     if (gesture) return;
@@ -527,23 +522,24 @@ stage.addEventListener('touchend', e => {
     if (now - lastTapMs < 270 && ptCount() === 0) {
         e.preventDefault();
         if (sc > 1.05) {
-            resetTransform(true);
+            resetT(); applyT(true);
         } else {
-            const t  = e.changedTouches[0];
-            const r  = lbImg.getBoundingClientRect();
+            const t = e.changedTouches[0];
+            const r = lbImg.getBoundingClientRect();
             sc = 2.5;
             tx = -(t.clientX - r.left - r.width  / 2) * (sc - 1);
             ty = -(t.clientY - r.top  - r.height / 2) * (sc - 1);
             clampPan();
             applyT(true);
         }
-        lastTapMs = 0; return;
+        lastTapMs = 0;
+        return;
     }
     lastTapMs = now;
 }, { passive: false });
 
-// ── Init ─────────────────────────────────────────────────────────────────────
-fetchGallery();
+/* ── Init ─────────────────────────────────────────────────────────────────── */
+loadGallery();
 </script>
 </body>
 </html>

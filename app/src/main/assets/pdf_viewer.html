@@ -167,7 +167,9 @@
 </div>
 
 <div id="viewer-container">
-    <div id="pages-container"></div>
+    <div id="pages-parent">
+        <div id="pages-container"></div>
+    </div>
 </div>
 
 <div id="zoom-bar">
@@ -184,6 +186,7 @@
         'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
     const vc        = document.getElementById('viewer-container');
+    const pagesParent = document.getElementById('pages-parent');
     const pagesDiv  = document.getElementById('pages-container');
     const fileSelect= document.getElementById('file-select');
     const pageCount = document.getElementById('page-count');
@@ -191,12 +194,13 @@
     const statusEl  = document.getElementById('status');
 
     let pdfDoc    = null;
-    let fitScale  = 1.0;
+    let baseScale  = 1.0;
     let zoomLevel = 1.0;
-    const DPR     = Math.min(window.devicePixelRatio || 1, 2);
+    let baseWidth  = 0;
+    let baseHeight = 0;
+    let pdfFromRemote = false;
 
     function st(t)     { statusEl.textContent = t; }
-    function effScale(){ return fitScale * zoomLevel; }
     function updLabel(){ zoomLabel.textContent = Math.round(zoomLevel * 100) + '%'; }
 
     /* ── Fetch list ─────────────────────────────────────────────────────── */
@@ -228,10 +232,6 @@
         try {
             pdfDoc = await pdfjsLib.getDocument('/file?id=' + encodeURIComponent(docId)).promise;
             pageCount.textContent = pdfDoc.numPages + ' pages';
-
-            const fp  = await pdfDoc.getPage(1);
-            const vp1 = fp.getViewport({ scale: 1 });
-            fitScale  = Math.max(0.3, (vc.clientWidth - 32) / vp1.width);
             zoomLevel = 1.0;
             updLabel();
             await renderAll();
@@ -242,48 +242,106 @@
     async function renderAll() {
         pagesDiv.innerHTML = '';
         st('Rendering…');
-        const sc = effScale();
+        
+        const fp1  = await pdfDoc.getPage(1);
+        const vp1 = fp1.getViewport({ scale: 1 });
+        baseScale  = (vc.clientWidth - 32) / vp1.width;
+        
+        const renderScaleMultiplier = 1.5;
 
         for (let n = 1; n <= pdfDoc.numPages; n++) {
             const page = await pdfDoc.getPage(n);
-            const vp   = page.getViewport({ scale: sc * DPR });
+            const pageVp = page.getViewport({ scale: baseScale });
+            const pageWidth = pageVp.width;
+            const pageHeight = pageVp.height;
 
             const wrap = document.createElement('div');
             wrap.className = 'page-wrapper';
-            wrap.style.width  = (vp.width  / DPR) + 'px';
-            wrap.style.height = (vp.height / DPR) + 'px';
+            wrap.style.width  = pageWidth + 'px';
+            wrap.style.height = pageHeight + 'px';
+            if (n < pdfDoc.numPages) {
+                wrap.style.marginBottom = '14px';
+            }
 
             const cv  = document.createElement('canvas');
-            cv.width  = vp.width;
-            cv.height = vp.height;
-            cv.style.width  = (vp.width  / DPR) + 'px';
-            cv.style.height = (vp.height / DPR) + 'px';
+            const renderVp = page.getViewport({ scale: baseScale * renderScaleMultiplier });
+            cv.width  = renderVp.width;
+            cv.height = renderVp.height;
+            cv.style.width  = '100%';
+            cv.style.height = '100%';
 
             wrap.appendChild(cv);
             pagesDiv.appendChild(wrap);
 
-            await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+            await page.render({ canvasContext: cv.getContext('2d'), viewport: renderVp }).promise;
         }
+        
+        baseWidth = pagesDiv.scrollWidth;
+        baseHeight = pagesDiv.scrollHeight;
+        
+        applyZoomLevel(zoomLevel);
         st('Ready');
     }
 
-    /* ── Zoom ───────────────────────────────────────────────────────────── */
-    async function setZoom(lvl) {
-        if (!pdfDoc) return;
-        const ratio  = vc.scrollTop / (vc.scrollHeight || 1);
-        zoomLevel    = Math.min(Math.max(lvl, 0.25), 4.0);
+    /* ── Apply visual zoom using CSS transforms ── */
+    function applyZoomLevel(lvl) {
+        zoomLevel = Math.min(Math.max(lvl, 0.25), 4.0);
         updLabel();
-        await renderAll();
-        vc.scrollTop = ratio * vc.scrollHeight;
+        if (pagesParent && pagesDiv) {
+            pagesParent.style.width  = (baseWidth * zoomLevel) + 'px';
+            pagesParent.style.height = (baseHeight * zoomLevel) + 'px';
+            pagesDiv.style.width = baseWidth + 'px';
+            pagesDiv.style.height = baseHeight + 'px';
+            pagesDiv.style.transform = 'scale(' + zoomLevel + ')';
+        }
+    }
+
+    /* ── Zoom ───────────────────────────────────────────────────────────── */
+    function setZoom(lvl) {
+        if (!pdfDoc) return;
+        
+        const rect = vc.getBoundingClientRect();
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        
+        const docX = cx + vc.scrollLeft;
+        const docY = cy + vc.scrollTop;
+        
+        const oldZoom = zoomLevel;
+        const newZoom = Math.min(Math.max(lvl, 0.25), 4.0);
+        
+        applyZoomLevel(newZoom);
+        
+        const scaleChange = newZoom / oldZoom;
+        vc.scrollLeft = docX * scaleChange - cx;
+        vc.scrollTop  = docY * scaleChange - cy;
+        
+        syncZoomAndScroll();
     }
 
     document.getElementById('btn-in') .addEventListener('click', () => setZoom(zoomLevel + 0.25));
     document.getElementById('btn-out').addEventListener('click', () => setZoom(zoomLevel - 0.25));
     document.getElementById('btn-fit').addEventListener('click', () => setZoom(1.0));
-    fileSelect.addEventListener('change', e => loadPDF(e.target.value));
+    
+    fileSelect.addEventListener('change', e => {
+        loadPDF(e.target.value);
+        if (!pdfFromRemote && window.AndroidBridge) {
+            window.AndroidBridge.sendEvent(JSON.stringify({
+                app: 'pdf', action: 'open_file', id: e.target.value
+            }));
+        }
+    });
+
+    /* ── Scroll Listener (local) ── */
+    vc.addEventListener('scroll', function () {
+        if (pdfFromRemote || pinching) return;
+        syncZoomAndScroll();
+    }, { passive: true });
 
     /* ── Pinch zoom ─────────────────────────────────────────────────────── */
     let pDist0 = 0, pZoom0 = 1, pinching = false, pinchEndAt = 0;
+    let pinchCenterDocX = 0, pinchCenterDocY = 0;
+    let pinchCenterClientX = 0, pinchCenterClientY = 0;
 
     vc.addEventListener('touchstart', e => {
         if (e.touches.length === 2) {
@@ -291,6 +349,14 @@
             pDist0   = Math.hypot(e.touches[1].clientX - e.touches[0].clientX,
                                   e.touches[1].clientY - e.touches[0].clientY);
             pZoom0   = zoomLevel;
+
+            pinchCenterClientX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            pinchCenterClientY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+            const rect = vc.getBoundingClientRect();
+            pinchCenterDocX = (pinchCenterClientX - rect.left) + vc.scrollLeft;
+            pinchCenterDocY = (pinchCenterClientY - rect.top) + vc.scrollTop;
+
             e.preventDefault();
         }
     }, { passive: false });
@@ -298,25 +364,31 @@
     vc.addEventListener('touchmove', e => {
         if (!pinching || e.touches.length < 2) return;
         e.preventDefault();
-        const d     = Math.hypot(e.touches[1].clientX - e.touches[0].clientX,
-                                 e.touches[1].clientY - e.touches[0].clientY);
+        const d = Math.hypot(e.touches[1].clientX - e.touches[0].clientX,
+                             e.touches[1].clientY - e.touches[0].clientY);
         const newZoom = Math.min(Math.max(pZoom0 * (d / pDist0), 0.25), 4.0);
-        const ratio   = newZoom / zoomLevel;
-        zoomLevel     = newZoom;
-        updLabel();
-        // Live layout resize (no re-render — crisp re-render fires on touchend)
-        document.querySelectorAll('.page-wrapper').forEach(w => {
-            w.style.width  = (parseFloat(w.style.width)  * ratio) + 'px';
-            w.style.height = (parseFloat(w.style.height) * ratio) + 'px';
-        });
+        
+        applyZoomLevel(newZoom);
+
+        const rect = vc.getBoundingClientRect();
+        const currentMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const currentMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+        const scaleChange = newZoom / pZoom0;
+        const newDocX = pinchCenterDocX * scaleChange;
+        const newDocY = pinchCenterDocY * scaleChange;
+
+        vc.scrollLeft = newDocX - (currentMidX - rect.left);
+        vc.scrollTop  = newDocY - (currentMidY - rect.top);
+
+        syncZoomAndScroll();
     }, { passive: false });
 
     vc.addEventListener('touchend', e => {
         if (pinching && e.touches.length < 2) {
             pinching   = false;
             pinchEndAt = Date.now();
-            const r = vc.scrollTop / (vc.scrollHeight || 1);
-            renderAll().then(() => { vc.scrollTop = r * vc.scrollHeight; });
+            syncZoomAndScroll();
         }
     }, { passive: true });
 
@@ -325,7 +397,26 @@
     vc.addEventListener('touchend', e => {
         if (pinching || Date.now() - pinchEndAt < 500) return;
         const now = Date.now();
-        if (now - lastTap < 280) setZoom(zoomLevel > 1.1 ? 1.0 : 2.0);
+        if (now - lastTap < 280) {
+            const touch = e.changedTouches[0];
+            const rect = vc.getBoundingClientRect();
+            const clientX = touch.clientX;
+            const clientY = touch.clientY;
+            
+            const docX = (clientX - rect.left) + vc.scrollLeft;
+            const docY = (clientY - rect.top) + vc.scrollTop;
+            
+            const oldZoom = zoomLevel;
+            const newZoom = zoomLevel > 1.1 ? 1.0 : 2.0;
+            
+            applyZoomLevel(newZoom);
+            
+            const scaleChange = newZoom / oldZoom;
+            vc.scrollLeft = docX * scaleChange - (clientX - rect.left);
+            vc.scrollTop  = docY * scaleChange - (clientY - rect.top);
+            
+            syncZoomAndScroll();
+        }
         lastTap = now;
     }, { passive: true });
 
@@ -337,113 +428,63 @@
     }, { passive: false });
 
     /* ── ZeroBezel PDF Sync ─────────────────────────────────────────────── */
-    (function () {
-        var pdfScrollPending = false;
-        var pdfFromRemote    = false;
-        var renderingForSync = false;
-        /*
-         * blockScroll: true while setZoom() is in-progress.
-         * Prevents the vc.scrollTop assignment inside _origSetZoom from firing
-         * the scroll event and sending a stale position to the remote device
-         * BEFORE the new scrollHeight has settled. Without this, the remote
-         * receives an old scroll ratio against its old scrollHeight → jumps.
-         */
-        var blockScroll      = false;
-
-        /* 1. Normalized scroll sender (element scroll, not window.scroll) */
-        vc.addEventListener('scroll', function () {
-            if (pdfFromRemote || pdfScrollPending || blockScroll) return;
-            pdfScrollPending = true;
-            requestAnimationFrame(function () {
+    let syncTicking = false;
+    function syncZoomAndScroll() {
+        if (pdfFromRemote || syncTicking) return;
+        syncTicking = true;
+        requestAnimationFrame(function () {
+            if (window.AndroidBridge) {
                 var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
                 var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
-                if (window.AndroidBridge) {
-                    window.AndroidBridge.sendEvent(JSON.stringify({
-                        app: 'pdf', action: 'scroll',
-                        x: Math.min(Math.max(vc.scrollLeft / maxX, 0), 1),
-                        y: Math.min(Math.max(vc.scrollTop  / maxY, 0), 1)
-                    }));
-                }
-                pdfScrollPending = false;
-            });
-        }, { passive: true });
-
-        /* 2. Hook renderAll — sends zoom after pinch commits (renderingForSync=false).
-              setZoom sets renderingForSync=true so the hook is silent there. */
-        var _origRenderAll = renderAll;
-        renderAll = async function () {
-            await _origRenderAll();
-            if (pdfDoc && !pdfFromRemote && !renderingForSync && window.AndroidBridge) {
                 window.AndroidBridge.sendEvent(JSON.stringify({
                     app: 'pdf', action: 'zoom', level: zoomLevel
+                }));
+                window.AndroidBridge.sendEvent(JSON.stringify({
+                    app: 'pdf', action: 'scroll',
+                    x: Math.min(Math.max(vc.scrollLeft / maxX, 0), 1),
+                    y: Math.min(Math.max(vc.scrollTop  / maxY, 0), 1)
                 }));
             }
-        };
+            syncTicking = false;
+        });
+    }
 
-        /* 3. Wrap setZoom:
-              - blockScroll=true  → suppresses scroll events during the operation
-              - renderingForSync=true → suppresses the renderAll hook's zoom send
-              - After completion: sends zoom + scroll once with correct scrollHeight
-              - blockScroll=false after RAF (scroll event from _origSetZoom has fired
-                and been blocked by that point) */
-        var _origSetZoom = setZoom;
-        setZoom = async function (lvl) {
-            blockScroll      = true;
-            renderingForSync = true;
-            await _origSetZoom(lvl);
-            renderingForSync = false;
-            if (!pdfFromRemote && window.AndroidBridge) {
-                window.AndroidBridge.sendEvent(JSON.stringify({
-                    app: 'pdf', action: 'zoom', level: zoomLevel
-                }));
+    window.__zbPageApplySync = function (jsonStr) {
+        try {
+            var data = JSON.parse(jsonStr);
+            if (data.app !== 'pdf') return;
+            pdfFromRemote = true;
+
+            if (data.action === 'scroll') {
+                var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
+                var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
+                vc.scrollTop  = data.y * maxY;
+                vc.scrollLeft = data.x * maxX;
+                
                 requestAnimationFrame(function () {
-                    var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
-                    var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
-                    if (window.AndroidBridge) {
-                        window.AndroidBridge.sendEvent(JSON.stringify({
-                            app: 'pdf', action: 'scroll',
-                            x: maxX > 0 ? Math.min(Math.max(vc.scrollLeft / maxX, 0), 1) : 0,
-                            y: maxY > 0 ? Math.min(Math.max(vc.scrollTop  / maxY, 0), 1) : 0
-                        }));
-                    }
-                    blockScroll = false;
+                    requestAnimationFrame(function () { pdfFromRemote = false; });
                 });
-            } else {
-                /* Remote-triggered zoom: unblock scroll after 1 frame */
-                requestAnimationFrame(function () { blockScroll = false; });
-            }
-        };
 
-        /* 4. Receive sync from remote device */
-        window.__zbPageApplySync = function (jsonStr) {
-            try {
-                var data = JSON.parse(jsonStr);
-                if (data.app !== 'pdf') return;
-                pdfFromRemote = true;
+            } else if (data.action === 'zoom') {
+                if (Math.abs(data.level - zoomLevel) >= 0.01) {
+                    applyZoomLevel(data.level);
+                }
+                pdfFromRemote = false;
 
-                if (data.action === 'scroll') {
-                    var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
-                    var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
-                    vc.scrollTop  = data.y * maxY;
-                    vc.scrollLeft = data.x * maxX;
-                    requestAnimationFrame(function () {
-                        requestAnimationFrame(function () { pdfFromRemote = false; });
-                    });
-
-                } else if (data.action === 'zoom') {
-                    if (!pdfDoc || Math.abs(data.level - zoomLevel) < 0.01) {
-                        pdfFromRemote = false;
-                        return;
-                    }
-                    /* setZoom is now the hooked version; pdfFromRemote=true blocks re-broadcast */
-                    setZoom(data.level).then(function () { pdfFromRemote = false; });
-
+            } else if (data.action === 'open_file') {
+                if (fileSelect.value !== data.id) {
+                    fileSelect.value = data.id;
+                    loadPDF(data.id).then(function() { pdfFromRemote = false; });
                 } else {
                     pdfFromRemote = false;
                 }
-            } catch (e) { pdfFromRemote = false; }
-        };
-    })();
+            } else {
+                pdfFromRemote = false;
+            }
+        } catch (e) {
+            pdfFromRemote = false;
+        }
+    };
 
     /* ── Init ───────────────────────────────────────────────────────────── */
     fetchList();

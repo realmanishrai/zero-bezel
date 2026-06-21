@@ -6,6 +6,34 @@
     var isRemoteUpdate = false;
     var scrollTicking  = false;
 
+    /* ── URL semantic comparison helper ── */
+    function isUrlSemanticallyDifferent(url1, url2) {
+        if (url1 === url2) return false;
+        try {
+            var u1 = new URL(url1, window.location.href);
+            var u2 = new URL(url2, window.location.href);
+            if (u1.origin !== u2.origin) return true;
+            if (u1.pathname !== u2.pathname) return true;
+            
+            var ignoredParams = ['t', 'start', 'time', 'utm_source', 'utm_medium', 'utm_campaign', 'origin', 'feature'];
+            
+            function getCleanParams(urlObj) {
+                var params = [];
+                urlObj.searchParams.forEach(function (val, key) {
+                    if (ignoredParams.indexOf(key) === -1) {
+                        params.push(key + '=' + val);
+                    }
+                });
+                params.sort();
+                return params.join('&');
+            }
+            
+            return getCleanParams(u1) !== getCleanParams(u2);
+        } catch (e) {
+            return url1 !== url2;
+        }
+    }
+
     /* ── Scroll helper: works for normal pages AND pages with custom scroll roots ── */
     function getScrollEl() {
         /* document.scrollingElement is the "real" scrolling element per spec.
@@ -47,13 +75,16 @@
 
     /* ── History API intercept (SPA route changes) ───────────────────────── */
     (function () {
+        var lastSentUrl = window.location.href;
         function wrapHistory(method) {
             var orig = history[method];
             history[method] = function () {
                 var result = orig.apply(this, arguments);
-                if (!isRemoteUpdate && window.AndroidBridge) {
+                var newUrl = window.location.href;
+                if (!isRemoteUpdate && window.AndroidBridge && isUrlSemanticallyDifferent(lastSentUrl, newUrl)) {
+                    lastSentUrl = newUrl;
                     window.AndroidBridge.sendEvent(JSON.stringify({
-                        app: 'browser', action: 'load_url', url: window.location.href
+                        app: 'browser', action: 'load_url', url: newUrl
                     }));
                 }
                 return result;
@@ -71,40 +102,71 @@
         video.__zbAttached = true;
 
         video.addEventListener('play', function () {
-            if (isRemoteUpdate || !window.AndroidBridge) return;
-            window.AndroidBridge.sendEvent(JSON.stringify({
-                app: 'video', action: 'play',
-                time: video.currentTime
-                /* NOTE: No sentAt / clock-skew compensation — devices may have
-                   different system times, causing negative lag that would push
-                   the receiver BEHIND. On local WiFi the real latency is <100 ms
-                   which is imperceptible and not worth compensating. */
-            }));
+            if (isRemoteUpdate) return;
+            if (video.__zbIgnoreNextPlay) {
+                video.__zbIgnoreNextPlay = false;
+                return;
+            }
+
+            video.pause();
+            video.__zbIgnoreNextPause = true;
+
+            var t = video.currentTime;
+            if (window.AndroidBridge) {
+                window.AndroidBridge.sendEvent(JSON.stringify({
+                    app: 'video', action: 'play',
+                    time: t, delay: 250
+                }));
+            }
+
+            setTimeout(function () {
+                video.__zbIgnoreNextPlay = true;
+                video.play().catch(function () {});
+            }, 250);
         });
 
         video.addEventListener('pause', function () {
-            if (isRemoteUpdate || !window.AndroidBridge) return;
-            window.AndroidBridge.sendEvent(JSON.stringify({
-                app: 'video', action: 'pause',
-                time: video.currentTime
-            }));
+            if (isRemoteUpdate) return;
+            if (video.__zbIgnoreNextPause) {
+                video.__zbIgnoreNextPause = false;
+                return;
+            }
+            if (window.AndroidBridge) {
+                window.AndroidBridge.sendEvent(JSON.stringify({
+                    app: 'video', action: 'pause',
+                    time: video.currentTime
+                }));
+            }
         });
 
         video.addEventListener('seeked', function () {
-            /*
-             * LOOP-PREVENTION: applySync sets video.__zbSeekFromRemote = true
-             * BEFORE changing currentTime. When the seeked event fires here,
-             * we detect and reset the flag instead of re-broadcasting.
-             */
             if (video.__zbSeekFromRemote) {
                 video.__zbSeekFromRemote = false;
                 return;
             }
             if (isRemoteUpdate || !window.AndroidBridge) return;
+
+            var wasPaused = video.paused;
+            var t = video.currentTime;
+
+            if (!wasPaused) {
+                video.pause();
+                video.__zbIgnoreNextPause = true;
+            }
+
             window.AndroidBridge.sendEvent(JSON.stringify({
                 app: 'video', action: 'seek',
-                time: video.currentTime
+                time: t,
+                wasPlaying: !wasPaused,
+                delay: 250
             }));
+
+            if (!wasPaused) {
+                setTimeout(function () {
+                    video.__zbIgnoreNextPlay = true;
+                    video.play().catch(function () {});
+                }, 250);
+            }
         });
     }
 
@@ -162,9 +224,14 @@
                 document.querySelectorAll('video').forEach(function (v) {
                     if (data.time !== undefined) {
                         v.__zbSeekFromRemote = true;
-                        v.currentTime = data.time;  /* No lag-compensation: clock skew > network latency */
+                        v.currentTime = data.time;
                     }
-                    v.play().catch(function () {});
+                    var delay = data.delay ? 180 : 0;
+                    v.__zbIgnoreNextPlay = true;
+                    setTimeout(function () {
+                        v.__zbIgnoreNextPlay = true;
+                        v.play().catch(function () {});
+                    }, delay);
                 });
 
             } else if (data.action === 'pause') {
@@ -173,13 +240,23 @@
                         v.__zbSeekFromRemote = true;
                         v.currentTime = data.time;
                     }
+                    v.__zbIgnoreNextPause = true;
                     v.pause();
                 });
 
             } else if (data.action === 'seek') {
                 document.querySelectorAll('video').forEach(function (v) {
-                    v.__zbSeekFromRemote = true;  /* Reset in seeked handler, prevents echo loop */
+                    v.__zbSeekFromRemote = true;
                     v.currentTime = data.time;
+                    if (data.wasPlaying) {
+                        v.__zbIgnoreNextPause = true;
+                        v.pause();
+                        var delay = data.delay ? 180 : 0;
+                        setTimeout(function () {
+                            v.__zbIgnoreNextPlay = true;
+                            v.play().catch(function () {});
+                        }, delay);
+                    }
                 });
 
             } else if (data.action === 'click') {
@@ -201,8 +278,18 @@
             } else if (data.action === 'load_url') {
                 /* SPA navigation from History API intercept */
                 var url = data.url;
-                if (url && url !== window.location.href) {
+                if (url && isUrlSemanticallyDifferent(window.location.href, url)) {
                     window.location.href = url;
+                }
+            } else if (data.action === 'open_file') {
+                if (data.app === 'video') {
+                    var select = document.getElementById('video-select');
+                    if (select && select.value !== data.id) {
+                        select.value = data.id;
+                        if (window.loadVideo) {
+                            window.loadVideo(data.id, data.name);
+                        }
+                    }
                 }
             }
 

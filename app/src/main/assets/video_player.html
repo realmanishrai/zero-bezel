@@ -171,7 +171,7 @@
             }
         }
 
-        function loadVideo(id, name) {
+        window.loadVideo = function (id, name) {
             if (!id) return;
             setStatus('Loading video...');
             videoTitle.textContent = name;
@@ -183,11 +183,16 @@
                 console.error(e);
                 setStatus('Auto-play paused. Tap to play.');
             });
-        }
+        };
 
         videoSelect.addEventListener('change', (e) => {
             const selectedOpt = videoSelect.options[videoSelect.selectedIndex];
-            loadVideo(e.target.value, selectedOpt.textContent);
+            window.loadVideo(e.target.value, selectedOpt.textContent);
+            if (window.AndroidBridge) {
+                window.AndroidBridge.sendEvent(JSON.stringify({
+                    app: 'video', action: 'open_file', id: e.target.value, name: selectedOpt.textContent
+                }));
+            }
         });
 
         video.addEventListener('loadedmetadata', () => {

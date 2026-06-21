@@ -52,7 +52,12 @@ sealed class Screen {
     object Entry : Screen()
     object Host : Screen()
     object Client : Screen()
-    data class WebViewHost(val url: String, val parent: Screen) : Screen()
+    data class WebViewHost(
+        val url: String, 
+        val parent: Screen, 
+        val hostWidth: Int? = null, 
+        val hostHeight: Int? = null
+    ) : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -164,25 +169,45 @@ class MainActivity : ComponentActivity() {
         setContent {
             ZerobezelTheme {
                 var currentScreen by remember { mutableStateOf<Screen>(Screen.Entry) }
+                var extendDisplay by remember { mutableStateOf(false) }
+                var hostWidth by remember { mutableStateOf<Int?>(null) }
+                var hostHeight by remember { mutableStateOf<Int?>(null) }
+                val context = LocalContext.current
 
-                /* When remote taps an app icon, navigate to it locally */
+                /* When remote taps an app icon or changes mode, update locally */
                 LaunchedEffect(Unit) {
                     syncEventFlow.collect { json ->
-                        if (json.contains("open_app")) {
-                            try {
-                                val obj = JsonObject(json)
-                                if (obj.optString("action") == "open_app") {
+                        try {
+                            val obj = JsonObject(json)
+                            val action = obj.optString("action")
+                            when (action) {
+                                "open_app" -> {
                                     val url = obj.optString("url")
+                                    val hW = if (obj.has("hostWidth")) obj.getInt("hostWidth") else null
+                                    val hH = if (obj.has("hostHeight")) obj.getInt("hostHeight") else null
+                                    
+                                    if (hW != null && hW > 0) hostWidth = hW
+                                    if (hH != null && hH > 0) hostHeight = hH
+                                    
                                     val current = (currentScreen as? Screen.WebViewHost)?.url
                                     if (url.isNotEmpty() && url != current) {
                                         val parent = if (currentScreen is Screen.WebViewHost)
                                             (currentScreen as Screen.WebViewHost).parent
                                         else currentScreen
-                                        currentScreen = Screen.WebViewHost(url, parent)
+                                        currentScreen = Screen.WebViewHost(url, parent, hostWidth, hostHeight)
                                     }
                                 }
-                            } catch (_: Exception) {}
-                        }
+                                "host_dimensions" -> {
+                                    val w = obj.optInt("width")
+                                    val h = obj.optInt("height")
+                                    if (w > 0) hostWidth = w
+                                    if (h > 0) hostHeight = h
+                                }
+                                "extend_display" -> {
+                                    extendDisplay = obj.optBoolean("enabled")
+                                }
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
 
@@ -211,24 +236,46 @@ class MainActivity : ComponentActivity() {
                                 currentScreen = Screen.Entry
                             },
                             onOpenApp = { url ->
-                                currentScreen = Screen.WebViewHost(url, Screen.Host)
-                                NetworkService.sendSync("{\"action\":\"open_app\",\"url\":\"${url.replace("\"", "\\\"")}\"}") 
+                                val widthDp = context.resources.configuration.screenWidthDp
+                                val heightDp = context.resources.configuration.screenHeightDp
+                                currentScreen = Screen.WebViewHost(url, Screen.Host, widthDp, heightDp)
+                                NetworkService.sendSync("{\"action\":\"open_app\",\"url\":\"${url.replace("\"", "\\\"")}\",\"hostWidth\":$widthDp,\"hostHeight\":$heightDp}") 
+                            },
+                            extendDisplay = extendDisplay,
+                            onExtendDisplayToggle = {
+                                val newVal = !extendDisplay
+                                extendDisplay = newVal
+                                NetworkService.sendSync("{\"action\":\"extend_display\",\"enabled\":$newVal}")
+                                if (newVal) {
+                                    val config = context.resources.configuration
+                                    val w = config.screenWidthDp
+                                    val h = config.screenHeightDp
+                                    hostWidth = w
+                                    hostHeight = h
+                                    NetworkService.sendSync("{\"action\":\"host_dimensions\",\"width\":$w,\"height\":$h}")
+                                }
                             }
                         )
                         is Screen.Client -> ClientScreen(
                             connectionStatus = connectionStatus,
                             clientLogs = clientLogs,
                             muteClientAudio = muteClientAudio,
+                            extendDisplay = extendDisplay,
                             onConnect = { ip -> startClientConnection(ip) },
                             onNavigateBack = {
                                 stopClientConnection()
                                 currentScreen = Screen.Entry
                             },
                             onOpenApp = { url ->
-                                currentScreen = Screen.WebViewHost(url, Screen.Client)
+                                currentScreen = Screen.WebViewHost(url, Screen.Client, hostWidth, hostHeight)
                                 NetworkService.sendSync("{\"action\":\"open_app\",\"url\":\"${url.replace("\"", "\\\"")}\"}") 
                             },
-                            onMuteToggle = { muteClientAudio = !muteClientAudio }
+                            onMuteToggle = { muteClientAudio = !muteClientAudio },
+                            onExtendDisplayToggle = {
+                                val newVal = !extendDisplay
+                                extendDisplay = newVal
+                                NetworkService.sendSync("{\"action\":\"extend_display\",\"enabled\":$newVal}")
+                            }
                         )
                         is Screen.WebViewHost -> WebViewHostScreen(
                             url = screen.url,
@@ -236,7 +283,10 @@ class MainActivity : ComponentActivity() {
                             onSyncSend = { json -> NetworkService.sendSync(json) },
                             syncEvents = syncEventFlow as SharedFlow<String>,
                             isClient = screen.parent is Screen.Client,
-                            muteClientAudio = muteClientAudio
+                            muteClientAudio = muteClientAudio,
+                            extendDisplay = extendDisplay,
+                            hostWidth = screen.hostWidth,
+                            hostHeight = screen.hostHeight
                         )
                     }
                 }
@@ -360,7 +410,9 @@ private fun HostScreen(
     hostLogs: List<String>,
     onSelectFolder: (Uri) -> Unit,
     onNavigateBack: () -> Unit,
-    onOpenApp: (String) -> Unit
+    onOpenApp: (String) -> Unit,
+    extendDisplay: Boolean,
+    onExtendDisplayToggle: () -> Unit
 ) {
     val context = LocalContext.current
     val hostIp = remember { NetworkService.getLocalIpAddress() }
@@ -535,6 +587,24 @@ private fun HostScreen(
                             }
                         }
                     }
+
+                    HorizontalDivider(color = Color.Black.copy(alpha = 0.05f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "🖥️ Extend Display (Split View)",
+                            fontSize = 13.sp,
+                            color = Color(0xFF475569)
+                        )
+                        Switch(
+                            checked = extendDisplay,
+                            onCheckedChange = { onExtendDisplayToggle() }
+                        )
+                    }
                 }
             }
 
@@ -568,10 +638,12 @@ private fun ClientScreen(
     connectionStatus: String,
     clientLogs: List<String>,
     muteClientAudio: Boolean = false,
+    extendDisplay: Boolean = false,
     onConnect: (String) -> Unit,
     onNavigateBack: () -> Unit,
     onOpenApp: (String) -> Unit,
-    onMuteToggle: () -> Unit = {}
+    onMuteToggle: () -> Unit = {},
+    onExtendDisplayToggle: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var hostIpInput by remember { mutableStateOf("") }
@@ -692,6 +764,23 @@ private fun ClientScreen(
                             Switch(
                                 checked = muteClientAudio,
                                 onCheckedChange = { onMuteToggle() }
+                            )
+                        }
+
+                        // Extend Display toggle
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "🖥️ Extend Display (Split View)",
+                                fontSize = 13.sp,
+                                color = Color(0xFF475569)
+                            )
+                            Switch(
+                                checked = extendDisplay,
+                                onCheckedChange = { onExtendDisplayToggle() }
                             )
                         }
                         Row(

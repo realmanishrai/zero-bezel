@@ -1,0 +1,7 @@
+/* Force the entire page to be 2x wide and 1x tall unscaled, anchored to the top left */
+html, body {
+    transform-origin: top left !important;
+    width: 200vw !important; /* 200vw physical screen width (two screens wide) */
+    height: 100vh !important; /* 100vh physical screen height (one screen high) */
+    overflow: hidden !important;
+}

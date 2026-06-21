@@ -338,13 +338,21 @@
 
     /* ── ZeroBezel PDF Sync ─────────────────────────────────────────────── */
     (function () {
-        var pdfScrollPending  = false;
-        var pdfFromRemote     = false;
-        var renderingForSync  = false;  // prevents double-send when setZoom calls renderAll
+        var pdfScrollPending = false;
+        var pdfFromRemote    = false;
+        var renderingForSync = false;
+        /*
+         * blockScroll: true while setZoom() is in-progress.
+         * Prevents the vc.scrollTop assignment inside _origSetZoom from firing
+         * the scroll event and sending a stale position to the remote device
+         * BEFORE the new scrollHeight has settled. Without this, the remote
+         * receives an old scroll ratio against its old scrollHeight → jumps.
+         */
+        var blockScroll      = false;
 
-        /* 1. Normalized scroll sender (element scroll, not window scroll) */
+        /* 1. Normalized scroll sender (element scroll, not window.scroll) */
         vc.addEventListener('scroll', function () {
-            if (pdfFromRemote || pdfScrollPending) return;
+            if (pdfFromRemote || pdfScrollPending || blockScroll) return;
             pdfScrollPending = true;
             requestAnimationFrame(function () {
                 var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
@@ -360,10 +368,8 @@
             });
         }, { passive: true });
 
-        /* 2. Hook renderAll to broadcast zoom level after every re-render.
-              - setZoom() sets renderingForSync=true before calling renderAll,
-                so we skip the send there (setZoom sends its own after scroll-restore).
-              - Pinch touchend calls renderAll() directly → renderingForSync=false → sends. */
+        /* 2. Hook renderAll — sends zoom after pinch commits (renderingForSync=false).
+              setZoom sets renderingForSync=true so the hook is silent there. */
         var _origRenderAll = renderAll;
         renderAll = async function () {
             await _origRenderAll();
@@ -374,24 +380,37 @@
             }
         };
 
-        /* 3. Wrap setZoom so it also sends scroll-restore position after renderAll */
+        /* 3. Wrap setZoom:
+              - blockScroll=true  → suppresses scroll events during the operation
+              - renderingForSync=true → suppresses the renderAll hook's zoom send
+              - After completion: sends zoom + scroll once with correct scrollHeight
+              - blockScroll=false after RAF (scroll event from _origSetZoom has fired
+                and been blocked by that point) */
         var _origSetZoom = setZoom;
         setZoom = async function (lvl) {
+            blockScroll      = true;
             renderingForSync = true;
             await _origSetZoom(lvl);
             renderingForSync = false;
-            /* Send both zoom and the restored scroll position */
             if (!pdfFromRemote && window.AndroidBridge) {
                 window.AndroidBridge.sendEvent(JSON.stringify({
                     app: 'pdf', action: 'zoom', level: zoomLevel
                 }));
-                var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
-                var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
-                window.AndroidBridge.sendEvent(JSON.stringify({
-                    app: 'pdf', action: 'scroll',
-                    x: maxX > 0 ? Math.min(Math.max(vc.scrollLeft / maxX, 0), 1) : 0,
-                    y: maxY > 0 ? Math.min(Math.max(vc.scrollTop  / maxY, 0), 1) : 0
-                }));
+                requestAnimationFrame(function () {
+                    var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
+                    var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
+                    if (window.AndroidBridge) {
+                        window.AndroidBridge.sendEvent(JSON.stringify({
+                            app: 'pdf', action: 'scroll',
+                            x: maxX > 0 ? Math.min(Math.max(vc.scrollLeft / maxX, 0), 1) : 0,
+                            y: maxY > 0 ? Math.min(Math.max(vc.scrollTop  / maxY, 0), 1) : 0
+                        }));
+                    }
+                    blockScroll = false;
+                });
+            } else {
+                /* Remote-triggered zoom: unblock scroll after 1 frame */
+                requestAnimationFrame(function () { blockScroll = false; });
             }
         };
 
@@ -407,7 +426,6 @@
                     var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
                     vc.scrollTop  = data.y * maxY;
                     vc.scrollLeft = data.x * maxX;
-                    /* Wait 2 frames so the scroll event has already fired and been blocked */
                     requestAnimationFrame(function () {
                         requestAnimationFrame(function () { pdfFromRemote = false; });
                     });
@@ -417,7 +435,7 @@
                         pdfFromRemote = false;
                         return;
                     }
-                    /* setZoom is now the hooked version; pdfFromRemote=true prevents re-broadcast */
+                    /* setZoom is now the hooked version; pdfFromRemote=true blocks re-broadcast */
                     setZoom(data.level).then(function () { pdfFromRemote = false; });
 
                 } else {

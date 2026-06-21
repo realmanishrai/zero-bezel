@@ -36,6 +36,7 @@ import com.realmanishrai.zero_bezel.ui.theme.GlassyBackground
 import com.realmanishrai.zero_bezel.ui.theme.ZerobezelTheme
 import com.realmanishrai.zero_bezel.ui.theme.glassCard
 import kotlinx.coroutines.launch
+import org.json.JSONObject as JsonObject
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -164,6 +165,27 @@ class MainActivity : ComponentActivity() {
             ZerobezelTheme {
                 var currentScreen by remember { mutableStateOf<Screen>(Screen.Entry) }
 
+                /* When remote taps an app icon, navigate to it locally */
+                LaunchedEffect(Unit) {
+                    syncEventFlow.collect { json ->
+                        if (json.contains("open_app")) {
+                            try {
+                                val obj = JsonObject(json)
+                                if (obj.optString("action") == "open_app") {
+                                    val url = obj.optString("url")
+                                    val current = (currentScreen as? Screen.WebViewHost)?.url
+                                    if (url.isNotEmpty() && url != current) {
+                                        val parent = if (currentScreen is Screen.WebViewHost)
+                                            (currentScreen as Screen.WebViewHost).parent
+                                        else currentScreen
+                                        currentScreen = Screen.WebViewHost(url, parent)
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -188,7 +210,10 @@ class MainActivity : ComponentActivity() {
                                 stopHostServers()
                                 currentScreen = Screen.Entry
                             },
-                            onOpenApp = { url -> currentScreen = Screen.WebViewHost(url, Screen.Host) }
+                            onOpenApp = { url ->
+                                currentScreen = Screen.WebViewHost(url, Screen.Host)
+                                NetworkService.sendSync("{\"action\":\"open_app\",\"url\":\"${url.replace("\"", "\\\"")}\"}") 
+                            }
                         )
                         is Screen.Client -> ClientScreen(
                             connectionStatus = connectionStatus,
@@ -199,7 +224,10 @@ class MainActivity : ComponentActivity() {
                                 stopClientConnection()
                                 currentScreen = Screen.Entry
                             },
-                            onOpenApp = { url -> currentScreen = Screen.WebViewHost(url, Screen.Client) },
+                            onOpenApp = { url ->
+                                currentScreen = Screen.WebViewHost(url, Screen.Client)
+                                NetworkService.sendSync("{\"action\":\"open_app\",\"url\":\"${url.replace("\"", "\\\"")}\"}") 
+                            },
                             onMuteToggle = { muteClientAudio = !muteClientAudio }
                         )
                         is Screen.WebViewHost -> WebViewHostScreen(

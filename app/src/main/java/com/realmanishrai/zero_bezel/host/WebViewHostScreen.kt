@@ -66,15 +66,6 @@ fun WebViewHostScreen(
                 val obj    = JSONObject(json)
                 val action = obj.optString("action")
                 when (action) {
-                    // JS-handled: scroll position, zoom, video controls
-                    "scroll", "zoom", "play", "pause", "seek" -> {
-                        // Escape single-quotes so the JSON can be safely embedded in a JS string
-                        val escaped = json.replace("\\", "\\\\").replace("'", "\\'")
-                        wv.post {
-                            wv.evaluateJavascript(
-                                "if(window.applySync){window.applySync('$escaped');}", null)
-                        }
-                    }
                     // Kotlin-handled: URL navigation
                     "load_url" -> {
                         val target = obj.optString("url")
@@ -83,6 +74,15 @@ fun WebViewHostScreen(
                     // Kotlin-handled: back navigation
                     "go_back" -> {
                         wv.post { if (wv.canGoBack()) wv.goBack() }
+                    }
+                    // Everything else (scroll, zoom, play/pause/seek, gallery open/goto/close/transform,
+                    // pdf scroll/zoom, browser click, open_app) → handled by window.applySync in JS
+                    else -> {
+                        val escaped = json.replace("\\", "\\\\").replace("'", "\\'")
+                        wv.post {
+                            wv.evaluateJavascript(
+                                "if(window.applySync){window.applySync('$escaped');}", null)
+                        }
                     }
                 }
             } catch (_: Exception) { /* malformed JSON, ignore */ }

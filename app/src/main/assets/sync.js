@@ -6,16 +6,23 @@
     var isRemoteUpdate = false;
     var scrollTicking  = false;
 
-    /* ── Throttled window-scroll sender (browser) ───────────────────────── */
+    /* ── Scroll helper: works for normal pages AND pages with custom scroll roots ── */
+    function getScrollEl() {
+        /* document.scrollingElement is the "real" scrolling element per spec.
+           Falls back to documentElement for older Android WebViews. */
+        return document.scrollingElement || document.documentElement;
+    }
+
+    /* ── Throttled scroll sender ─────────────────────────────────────────── */
     window.addEventListener('scroll', function () {
         if (isRemoteUpdate || scrollTicking) return;
         scrollTicking = true;
         requestAnimationFrame(function () {
-            var docEl = document.documentElement;
-            var maxX  = Math.max(1, docEl.scrollWidth  - window.innerWidth);
-            var maxY  = Math.max(1, docEl.scrollHeight - window.innerHeight);
-            var normX = Math.min(Math.max(window.scrollX / maxX, 0), 1);
-            var normY = Math.min(Math.max(window.scrollY / maxY, 0), 1);
+            var el   = getScrollEl();
+            var maxX = Math.max(1, el.scrollWidth  - window.innerWidth);
+            var maxY = Math.max(1, el.scrollHeight - window.innerHeight);
+            var normX = Math.min(Math.max(el.scrollLeft / maxX, 0), 1);
+            var normY = Math.min(Math.max(el.scrollTop  / maxY, 0), 1);
             if (window.AndroidBridge) {
                 window.AndroidBridge.sendEvent(JSON.stringify({
                     app: 'all', action: 'scroll', x: normX, y: normY
@@ -25,6 +32,39 @@
         });
     }, { passive: true });
 
+    /* ── Browser click sync ──────────────────────────────────────────────── */
+    document.addEventListener('click', function (e) {
+        if (isRemoteUpdate || !window.AndroidBridge) return;
+        /* Skip clicks that we synthesised ourselves */
+        if (e.__zbRemote) return;
+        var el   = getScrollEl();
+        var nx   = (window.scrollX + e.clientX) / Math.max(1, el.scrollWidth);
+        var ny   = (window.scrollY + e.clientY) / Math.max(1, el.scrollHeight);
+        window.AndroidBridge.sendEvent(JSON.stringify({
+            app: 'browser', action: 'click', nx: nx, ny: ny
+        }));
+    }, { capture: true, passive: true });
+
+    /* ── History API intercept (SPA route changes) ───────────────────────── */
+    (function () {
+        function wrapHistory(method) {
+            var orig = history[method];
+            history[method] = function () {
+                var result = orig.apply(this, arguments);
+                if (!isRemoteUpdate && window.AndroidBridge) {
+                    window.AndroidBridge.sendEvent(JSON.stringify({
+                        app: 'browser', action: 'load_url', url: window.location.href
+                    }));
+                }
+                return result;
+            };
+        }
+        if (window.history) {
+            wrapHistory('pushState');
+            wrapHistory('replaceState');
+        }
+    })();
+
     /* ── Video event listeners ───────────────────────────────────────────── */
     function attachVideo(video) {
         if (video.__zbAttached) return;
@@ -32,11 +72,13 @@
 
         video.addEventListener('play', function () {
             if (isRemoteUpdate || !window.AndroidBridge) return;
-            /* Include currentTime + sentAt so receiver can compensate for latency */
             window.AndroidBridge.sendEvent(JSON.stringify({
                 app: 'video', action: 'play',
-                time: video.currentTime,
-                sentAt: Date.now()
+                time: video.currentTime
+                /* NOTE: No sentAt / clock-skew compensation — devices may have
+                   different system times, causing negative lag that would push
+                   the receiver BEHIND. On local WiFi the real latency is <100 ms
+                   which is imperceptible and not worth compensating. */
             }));
         });
 
@@ -50,10 +92,9 @@
 
         video.addEventListener('seeked', function () {
             /*
-             * LOOP-PREVENTION: When applySync sets currentTime, it sets
-             * video.__zbSeekFromRemote = true BEFORE the assignment.
-             * The seeked event fires later; we detect and reset the flag here
-             * so no echo is sent back.
+             * LOOP-PREVENTION: applySync sets video.__zbSeekFromRemote = true
+             * BEFORE changing currentTime. When the seeked event fires here,
+             * we detect and reset the flag instead of re-broadcasting.
              */
             if (video.__zbSeekFromRemote) {
                 video.__zbSeekFromRemote = false;
@@ -62,8 +103,7 @@
             if (isRemoteUpdate || !window.AndroidBridge) return;
             window.AndroidBridge.sendEvent(JSON.stringify({
                 app: 'video', action: 'seek',
-                time: video.currentTime,
-                sentAt: Date.now()
+                time: video.currentTime
             }));
         });
     }
@@ -94,24 +134,24 @@
     /* ── Master applySync receiver ───────────────────────────────────────── */
     window.applySync = function (jsonStr) {
         /*
-         * PDF and Gallery pages define window.__zbPageApplySync to handle their
-         * own custom events (element scroll, lightbox, transform).
-         * For those pages, skip the generic handler entirely.
+         * PDF and Gallery pages define window.__zbPageApplySync.
+         * Those pages fully own their own sync (custom element scroll,
+         * lightbox, transform, zoom). The generic handler is skipped.
          */
         if (window.__zbPageApplySync) {
             window.__zbPageApplySync(jsonStr);
             return;
         }
 
-        /* Generic handler: browser scroll + video controls */
+        /* Generic handler: browser + video */
         try {
             var data = JSON.parse(jsonStr);
             isRemoteUpdate = true;
 
             if (data.action === 'scroll') {
-                var docEl = document.documentElement;
-                var maxX  = Math.max(1, docEl.scrollWidth  - window.innerWidth);
-                var maxY  = Math.max(1, docEl.scrollHeight - window.innerHeight);
+                var el   = getScrollEl();
+                var maxX = Math.max(1, el.scrollWidth  - window.innerWidth);
+                var maxY = Math.max(1, el.scrollHeight - window.innerHeight);
                 window.scrollTo(data.x * maxX, data.y * maxY);
 
             } else if (data.action === 'zoom') {
@@ -120,11 +160,9 @@
 
             } else if (data.action === 'play') {
                 document.querySelectorAll('video').forEach(function (v) {
-                    /* Lag compensation: advance time by network round-trip estimate */
-                    var lag = data.sentAt ? (Date.now() - data.sentAt) / 1000 : 0;
                     if (data.time !== undefined) {
                         v.__zbSeekFromRemote = true;
-                        v.currentTime = Math.max(0, data.time + lag);
+                        v.currentTime = data.time;  /* No lag-compensation: clock skew > network latency */
                     }
                     v.play().catch(function () {});
                 });
@@ -140,10 +178,32 @@
 
             } else if (data.action === 'seek') {
                 document.querySelectorAll('video').forEach(function (v) {
-                    var lag = data.sentAt ? (Date.now() - data.sentAt) / 1000 : 0;
-                    v.__zbSeekFromRemote = true;  /* Reset in seeked handler */
-                    v.currentTime = Math.max(0, data.time + lag);
+                    v.__zbSeekFromRemote = true;  /* Reset in seeked handler, prevents echo loop */
+                    v.currentTime = data.time;
                 });
+
+            } else if (data.action === 'click') {
+                /* Synthesise a click at the same normalised document position */
+                var el   = getScrollEl();
+                var absX = data.nx * el.scrollWidth;
+                var absY = data.ny * el.scrollHeight;
+                var cx   = absX - window.scrollX;
+                var cy   = absY - window.scrollY;
+                var target = document.elementFromPoint(cx, cy);
+                if (target) {
+                    var evt = new MouseEvent('click', {
+                        bubbles: true, cancelable: true, clientX: cx, clientY: cy
+                    });
+                    evt.__zbRemote = true;  /* Suppress re-broadcast in capture listener */
+                    target.dispatchEvent(evt);
+                }
+
+            } else if (data.action === 'load_url') {
+                /* SPA navigation from History API intercept */
+                var url = data.url;
+                if (url && url !== window.location.href) {
+                    window.location.href = url;
+                }
             }
 
             setTimeout(function () { isRemoteUpdate = false; }, 200);

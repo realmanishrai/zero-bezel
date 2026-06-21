@@ -60,19 +60,6 @@
         });
     }, { passive: true });
 
-    /* ── Browser click sync ──────────────────────────────────────────────── */
-    document.addEventListener('click', function (e) {
-        if (isRemoteUpdate || !window.AndroidBridge) return;
-        /* Skip clicks that we synthesised ourselves */
-        if (e.__zbRemote) return;
-        var el   = getScrollEl();
-        var nx   = (window.scrollX + e.clientX) / Math.max(1, el.scrollWidth);
-        var ny   = (window.scrollY + e.clientY) / Math.max(1, el.scrollHeight);
-        window.AndroidBridge.sendEvent(JSON.stringify({
-            app: 'browser', action: 'click', nx: nx, ny: ny
-        }));
-    }, { capture: true, passive: true });
-
     /* ── History API intercept (SPA route changes) ───────────────────────── */
     (function () {
         var lastSentUrl = window.location.href;
@@ -258,22 +245,6 @@
                         }, delay);
                     }
                 });
-
-            } else if (data.action === 'click') {
-                /* Synthesise a click at the same normalised document position */
-                var el   = getScrollEl();
-                var absX = data.nx * el.scrollWidth;
-                var absY = data.ny * el.scrollHeight;
-                var cx   = absX - window.scrollX;
-                var cy   = absY - window.scrollY;
-                var target = document.elementFromPoint(cx, cy);
-                if (target) {
-                    var evt = new MouseEvent('click', {
-                        bubbles: true, cancelable: true, clientX: cx, clientY: cy
-                    });
-                    evt.__zbRemote = true;  /* Suppress re-broadcast in capture listener */
-                    target.dispatchEvent(evt);
-                }
 
             } else if (data.action === 'load_url') {
                 /* SPA navigation from History API intercept */

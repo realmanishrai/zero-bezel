@@ -336,6 +336,97 @@
         setZoom(zoomLevel + (e.deltaY < 0 ? 0.15 : -0.15));
     }, { passive: false });
 
+    /* ── ZeroBezel PDF Sync ─────────────────────────────────────────────── */
+    (function () {
+        var pdfScrollPending  = false;
+        var pdfFromRemote     = false;
+        var renderingForSync  = false;  // prevents double-send when setZoom calls renderAll
+
+        /* 1. Normalized scroll sender (element scroll, not window scroll) */
+        vc.addEventListener('scroll', function () {
+            if (pdfFromRemote || pdfScrollPending) return;
+            pdfScrollPending = true;
+            requestAnimationFrame(function () {
+                var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
+                var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.sendEvent(JSON.stringify({
+                        app: 'pdf', action: 'scroll',
+                        x: Math.min(Math.max(vc.scrollLeft / maxX, 0), 1),
+                        y: Math.min(Math.max(vc.scrollTop  / maxY, 0), 1)
+                    }));
+                }
+                pdfScrollPending = false;
+            });
+        }, { passive: true });
+
+        /* 2. Hook renderAll to broadcast zoom level after every re-render.
+              - setZoom() sets renderingForSync=true before calling renderAll,
+                so we skip the send there (setZoom sends its own after scroll-restore).
+              - Pinch touchend calls renderAll() directly → renderingForSync=false → sends. */
+        var _origRenderAll = renderAll;
+        renderAll = async function () {
+            await _origRenderAll();
+            if (pdfDoc && !pdfFromRemote && !renderingForSync && window.AndroidBridge) {
+                window.AndroidBridge.sendEvent(JSON.stringify({
+                    app: 'pdf', action: 'zoom', level: zoomLevel
+                }));
+            }
+        };
+
+        /* 3. Wrap setZoom so it also sends scroll-restore position after renderAll */
+        var _origSetZoom = setZoom;
+        setZoom = async function (lvl) {
+            renderingForSync = true;
+            await _origSetZoom(lvl);
+            renderingForSync = false;
+            /* Send both zoom and the restored scroll position */
+            if (!pdfFromRemote && window.AndroidBridge) {
+                window.AndroidBridge.sendEvent(JSON.stringify({
+                    app: 'pdf', action: 'zoom', level: zoomLevel
+                }));
+                var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
+                var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
+                window.AndroidBridge.sendEvent(JSON.stringify({
+                    app: 'pdf', action: 'scroll',
+                    x: maxX > 0 ? Math.min(Math.max(vc.scrollLeft / maxX, 0), 1) : 0,
+                    y: maxY > 0 ? Math.min(Math.max(vc.scrollTop  / maxY, 0), 1) : 0
+                }));
+            }
+        };
+
+        /* 4. Receive sync from remote device */
+        window.__zbPageApplySync = function (jsonStr) {
+            try {
+                var data = JSON.parse(jsonStr);
+                if (data.app !== 'pdf') return;
+                pdfFromRemote = true;
+
+                if (data.action === 'scroll') {
+                    var maxY = Math.max(1, vc.scrollHeight - vc.clientHeight);
+                    var maxX = Math.max(1, vc.scrollWidth  - vc.clientWidth);
+                    vc.scrollTop  = data.y * maxY;
+                    vc.scrollLeft = data.x * maxX;
+                    /* Wait 2 frames so the scroll event has already fired and been blocked */
+                    requestAnimationFrame(function () {
+                        requestAnimationFrame(function () { pdfFromRemote = false; });
+                    });
+
+                } else if (data.action === 'zoom') {
+                    if (!pdfDoc || Math.abs(data.level - zoomLevel) < 0.01) {
+                        pdfFromRemote = false;
+                        return;
+                    }
+                    /* setZoom is now the hooked version; pdfFromRemote=true prevents re-broadcast */
+                    setZoom(data.level).then(function () { pdfFromRemote = false; });
+
+                } else {
+                    pdfFromRemote = false;
+                }
+            } catch (e) { pdfFromRemote = false; }
+        };
+    })();
+
     /* ── Init ───────────────────────────────────────────────────────────── */
     fetchList();
 </script>

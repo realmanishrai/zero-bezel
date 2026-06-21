@@ -538,6 +538,115 @@ stage.addEventListener('touchend', e => {
     lastTapMs = now;
 }, { passive: false });
 
+/* ── ZeroBezel Gallery Sync ───────────────────────────────────────────────── */
+/*
+ * All sync code lives in the same script scope as the gallery, so it can
+ * access the let-variables tx, ty, sc, curIdx, gesture, images directly.
+ *
+ * Normalization: tx / stage.clientWidth and ty / stage.clientHeight → 0-1 range
+ * independent of physical screen size or DPI.
+ */
+(function () {
+    var __zbGalFromRemote    = false;
+    var __zbTransformPending = false;
+
+    /* ── Throttled transform broadcaster ───────────────────────────────── */
+    function zbSendTransform() {
+        if (__zbTransformPending || !window.AndroidBridge) return;
+        __zbTransformPending = true;
+        requestAnimationFrame(function () {
+            var sw = stage.clientWidth  || window.innerWidth;
+            var sh = stage.clientHeight || window.innerHeight;
+            window.AndroidBridge.sendEvent(JSON.stringify({
+                app:   'gallery',
+                action:'transform',
+                scale: sc,
+                nTx:   sw > 0 ? tx / sw : 0,
+                nTy:   sh > 0 ? ty / sh : 0
+            }));
+            __zbTransformPending = false;
+        });
+    }
+
+    /* ── Wrap openLightbox ──────────────────────────────────────────────── */
+    var _origOpen = openLightbox;
+    openLightbox = function (i) {
+        _origOpen(i);
+        if (!__zbGalFromRemote && window.AndroidBridge) {
+            window.AndroidBridge.sendEvent(JSON.stringify({
+                app: 'gallery', action: 'open', index: i
+            }));
+        }
+    };
+
+    /* ── Wrap goTo ──────────────────────────────────────────────────────── */
+    var _origGoTo = goTo;
+    goTo = function (i, dir) {
+        /* Send BEFORE calling original (curIdx still holds old value for dir calc) */
+        if (!__zbGalFromRemote && window.AndroidBridge && i >= 0 && i < images.length) {
+            var d = dir || (i > curIdx ? 'left' : 'right');
+            window.AndroidBridge.sendEvent(JSON.stringify({
+                app: 'gallery', action: 'goto', index: i, dir: d
+            }));
+        }
+        _origGoTo(i, dir);
+    };
+
+    /* ── Wrap closeLightbox ─────────────────────────────────────────────── */
+    var _origClose = closeLightbox;
+    closeLightbox = function () {
+        _origClose();
+        if (!__zbGalFromRemote && window.AndroidBridge) {
+            window.AndroidBridge.sendEvent(JSON.stringify({
+                app: 'gallery', action: 'close'
+            }));
+        }
+    };
+
+    /* ── Live transform sync during pinch/pan ───────────────────────────── */
+    /* These listeners are ADDITIONAL to the existing gesture-engine listeners */
+    stage.addEventListener('touchmove', function () {
+        if (__zbGalFromRemote) return;
+        if (gesture === 'pinch' || gesture === 'pan') {
+            zbSendTransform();
+        }
+    }, { passive: true });
+
+    stage.addEventListener('touchend', function () {
+        if (!__zbGalFromRemote) zbSendTransform();
+    }, { passive: true });
+
+    /* ── Receive sync from remote device ────────────────────────────────── */
+    window.__zbPageApplySync = function (jsonStr) {
+        try {
+            var data = JSON.parse(jsonStr);
+            if (data.app !== 'gallery') return;
+            __zbGalFromRemote = true;
+            try {
+                if (data.action === 'open' && typeof data.index === 'number') {
+                    openLightbox(data.index);
+
+                } else if (data.action === 'goto' && typeof data.index === 'number') {
+                    goTo(data.index, data.dir);
+
+                } else if (data.action === 'close') {
+                    closeLightbox();
+
+                } else if (data.action === 'transform') {
+                    var sw = stage.clientWidth  || window.innerWidth;
+                    var sh = stage.clientHeight || window.innerHeight;
+                    sc = typeof data.scale === 'number' ? data.scale : 1;
+                    tx = typeof data.nTx   === 'number' ? data.nTx * sw : 0;
+                    ty = typeof data.nTy   === 'number' ? data.nTy * sh : 0;
+                    clampPan();
+                    applyT(false);
+                }
+            } catch (innerErr) { /* ignore individual action errors */ }
+            setTimeout(function () { __zbGalFromRemote = false; }, 250);
+        } catch (e) { __zbGalFromRemote = false; }
+    };
+})();
+
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 loadGallery();
 </script>

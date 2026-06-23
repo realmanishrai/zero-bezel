@@ -119,7 +119,7 @@
 
             if (window.AndroidBridge) {
                 window.AndroidBridge.sendEvent(JSON.stringify({
-                    app: 'all', action: 'extend_zoom', scale: newScale
+                    app: 'all', action: 'extend_zoom', scale: newScale, panX: panX, panY: panY
                 }));
             }
         } else if (panning && e.touches.length === 1) {
@@ -161,7 +161,7 @@
         
         var isClient = window.__zbIsClient;
         if (isClient) {
-            document.documentElement.style.transform = 'scale(' + scale + ') translate(' + px + 'px, ' + py + 'px) translateX(-50%)';
+            document.documentElement.style.transform = 'translateX(-50%) scale(' + scale + ') translate(' + px + 'px, ' + py + 'px)';
         } else {
             document.documentElement.style.transform = 'scale(' + scale + ') translate(' + px + 'px, ' + py + 'px)';
         }
@@ -408,7 +408,9 @@
 
             } else if (data.action === 'extend_zoom') {
                 if (window.__zbExtendDisplay) {
-                    applyExtendScaleAndPan(data.scale, panX, panY);
+                    var px = data.panX !== undefined ? data.panX : panX;
+                    var py = data.panY !== undefined ? data.panY : panY;
+                    applyExtendScaleAndPan(data.scale, px, py);
                 }
 
             } else if (data.action === 'extend_pan') {
